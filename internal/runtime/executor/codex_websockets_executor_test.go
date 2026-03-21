@@ -32,6 +32,24 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 	}
 }
 
+func TestNormalizeCodexModelNameStripsReasoningSuffix(t *testing.T) {
+	if got := normalizeCodexModelName("gpt-5.4-low"); got != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModelName(low) = %s, want %s", got, "gpt-5.4")
+	}
+	if got := normalizeCodexModelName("gpt-5.4-medium"); got != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModelName(medium) = %s, want %s", got, "gpt-5.4")
+	}
+	if got := normalizeCodexModelName("gpt-5.4-high"); got != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModelName(high) = %s, want %s", got, "gpt-5.4")
+	}
+	if got := normalizeCodexModelName("gpt-5.4-xhigh"); got != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModelName(xhigh) = %s, want %s", got, "gpt-5.4")
+	}
+	if got := normalizeCodexModelName("gpt-5.4"); got != "gpt-5.4" {
+		t.Fatalf("normalizeCodexModelName(base) = %s, want %s", got, "gpt-5.4")
+	}
+}
+
 func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) {
 	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil)
 
