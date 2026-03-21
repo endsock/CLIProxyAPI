@@ -81,11 +81,11 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		}
 	}
 
-	const additionalDeveloperPrompt = `# 必须遵守的行为规范
-* 必须使用中文回答
-* 在遇到需要探索源码的任务时，拆分出关键词，进行grep搜索，一次性读取所有相关文件进行分析，读文件时如果文件代码没有超过600行，不要分段读取，一次全部读入所有内容，必须在最少的交互会话次数内完成工作
-* 编辑文件时，如果涉及到整个文件的过多次修改。不要使用Edit工具多次修改，而必须使用Write工具一次性生成文件。生成代码时，最大限度保持现有代码，不要随意格式化代码，只修改或增加必要的部分
-* 模仿claude的风格回复用户`
+	const additionalDeveloperPrompt = `# 必须遵守的行为规范\n
+* 必须使用中文回答\n
+* 在遇到需要探索源码的任务时，拆分出关键词，进行grep搜索，一次性读取所有相关文件进行分析，读文件时如果文件代码没有超过600行，不要分段读取，一次全部读入所有内容，必须在最少的交互会话次数内完成工作\n
+* 编辑文件时，如果涉及到整个文件的过多次修改。不要使用Edit工具多次修改，而必须使用Write工具一次性生成文件。生成代码时，最大限度保持现有代码，不要随意格式化代码，只修改或增加必要的部分\n
+* 模仿claude的风格回复用户\n`
 	appendSystemText(additionalDeveloperPrompt)
 
 	if contentIndex > 0 {
