@@ -39,7 +39,19 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	template := `{"model":"","instructions":"","input":[]}`
 
 	rootResult := gjson.ParseBytes(rawJSON)
-	template, _ = sjson.Set(template, "model", modelName)
+
+	// Extract reasoning effort suffix from model name and remove it
+	actualModelName := modelName
+	reasoningEffort := "medium"
+	if idx := strings.LastIndex(modelName, "-"); idx > 0 {
+		suffix := strings.ToLower(modelName[idx+1:])
+		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" {
+			actualModelName = modelName[:idx]
+			reasoningEffort = suffix
+		}
+	}
+
+	template, _ = sjson.Set(template, "model", actualModelName)
 
 	// Process system messages and convert them to input content format.
 	systemsResult := rootResult.Get("system")
@@ -273,36 +285,6 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 
 	// Add additional configuration parameters for the Codex API.
 	template, _ = sjson.Set(template, "parallel_tool_calls", true)
-
-	// Convert thinking.budget_tokens to reasoning.effort.
-	reasoningEffort := "medium"
-	if thinkingConfig := rootResult.Get("thinking"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
-		switch thinkingConfig.Get("type").String() {
-		case "enabled":
-			if budgetTokens := thinkingConfig.Get("budget_tokens"); budgetTokens.Exists() {
-				budget := int(budgetTokens.Int())
-				if effort, ok := thinking.ConvertBudgetToLevel(budget); ok && effort != "" {
-					reasoningEffort = effort
-				}
-			}
-		case "adaptive", "auto":
-			// Adaptive thinking can carry an explicit effort in output_config.effort (Claude 4.6).
-			// Pass through directly; ApplyThinking handles clamping to target model's levels.
-			effort := ""
-			if v := rootResult.Get("output_config.effort"); v.Exists() && v.Type == gjson.String {
-				effort = strings.ToLower(strings.TrimSpace(v.String()))
-			}
-			if effort != "" {
-				reasoningEffort = effort
-			} else {
-				reasoningEffort = string(thinking.LevelXHigh)
-			}
-		case "disabled":
-			if effort, ok := thinking.ConvertBudgetToLevel(0); ok && effort != "" {
-				reasoningEffort = effort
-			}
-		}
-	}
 	template, _ = sjson.Set(template, "reasoning.effort", reasoningEffort)
 	template, _ = sjson.Set(template, "reasoning.summary", "auto")
 	template, _ = sjson.Set(template, "stream", true)
