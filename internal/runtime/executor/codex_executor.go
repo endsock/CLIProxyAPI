@@ -112,8 +112,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+	originalTranslated := sdktranslator.TranslateRequest(from, to, req.Model, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, req.Model, req.Payload, false)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -222,8 +222,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+	originalTranslated := sdktranslator.TranslateRequest(from, to, req.Model, originalPayload, false)
+	body := sdktranslator.TranslateRequest(from, to, req.Model, req.Payload, false)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -312,8 +312,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	originalTranslated := sdktranslator.TranslateRequest(from, to, req.Model, originalPayload, true)
+	body := sdktranslator.TranslateRequest(from, to, req.Model, req.Payload, true)
 
 	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -418,7 +418,7 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+	body := sdktranslator.TranslateRequest(from, to, req.Model, req.Payload, false)
 
 	body, err := thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {

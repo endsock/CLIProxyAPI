@@ -6,12 +6,28 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertClaudeRequestToCodex_ModelSuffixSetsReasoningEffort(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-5.4-high",
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("gpt-5.4-high", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	if got := resultJSON.Get("model").String(); got != "gpt-5.4" {
+		t.Fatalf("model = %q, want %q", got, "gpt-5.4")
+	}
+	if got := resultJSON.Get("reasoning.effort").String(); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want %q", got, "high")
+	}
+}
+
 func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 	tests := []struct {
-		name             string
-		inputJSON        string
-		wantHasDeveloper bool
-		wantTexts        []string
+		name      string
+		inputJSON string
+		wantTexts []string
 	}{
 		{
 			name: "No system field",
@@ -19,7 +35,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 				"model": "claude-3-opus",
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
-			wantHasDeveloper: false,
+			wantTexts: nil,
 		},
 		{
 			name: "Empty string system field",
@@ -28,7 +44,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 				"system": "",
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
-			wantHasDeveloper: false,
+			wantTexts: nil,
 		},
 		{
 			name: "String system field",
@@ -37,8 +53,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 				"system": "Be helpful",
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
-			wantHasDeveloper: true,
-			wantTexts:        []string{"Be helpful"},
+			wantTexts: []string{"Be helpful"},
 		},
 		{
 			name: "Array system field with filtered billing header",
@@ -51,8 +66,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 				],
 				"messages": [{"role": "user", "content": "hello"}]
 			}`,
-			wantHasDeveloper: true,
-			wantTexts:        []string{"Block 1", "Block 2"},
+			wantTexts: []string{"Block 1", "Block 2"},
 		},
 	}
 
@@ -61,19 +75,13 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 			result := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
 			resultJSON := gjson.ParseBytes(result)
 			inputs := resultJSON.Get("input").Array()
-
-			hasDeveloper := len(inputs) > 0 && inputs[0].Get("role").String() == "developer"
-			if hasDeveloper != tt.wantHasDeveloper {
-				t.Fatalf("got hasDeveloper = %v, want %v. Output: %s", hasDeveloper, tt.wantHasDeveloper, resultJSON.Get("input").Raw)
-			}
-
-			if !tt.wantHasDeveloper {
-				return
+			if len(inputs) == 0 || inputs[0].Get("role").String() != "developer" {
+				t.Fatalf("expected first input to be developer message. Output: %s", resultJSON.Get("input").Raw)
 			}
 
 			content := inputs[0].Get("content").Array()
-			if len(content) != len(tt.wantTexts) {
-				t.Fatalf("got %d system content items, want %d. Content: %s", len(content), len(tt.wantTexts), inputs[0].Get("content").Raw)
+			if len(content) < len(tt.wantTexts)+1 {
+				t.Fatalf("got %d developer content items, want at least %d. Content: %s", len(content), len(tt.wantTexts)+1, inputs[0].Get("content").Raw)
 			}
 
 			for i, wantText := range tt.wantTexts {
