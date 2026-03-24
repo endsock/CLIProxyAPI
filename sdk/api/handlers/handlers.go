@@ -790,13 +790,17 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
+	normalizedBaseModelForRouting := thinking.NormalizeCodexModelName(baseModel)
 
-	providers = util.GetProviderName(baseModel)
+	providers = util.GetProviderName(normalizedBaseModelForRouting)
+	if len(providers) == 0 && normalizedBaseModelForRouting != baseModel {
+		providers = util.GetProviderName(baseModel)
+	}
 	// Fallback: if baseModel has no provider but differs from resolvedModelName,
 	// try using the full model name. This handles edge cases where custom models
 	// may be registered with their full suffixed name (e.g., "my-model(8192)").
-	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
-	// custom model registrations that include thinking suffixes.
+	// This also preserves custom models like "custom-model-high" when Codex-style
+	// normalization does not produce a valid provider match.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = util.GetProviderName(resolvedModelName)
 	}

@@ -21,14 +21,17 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	modelRegistry.RegisterClient("test-request-details-openai", "openai", []*registry.ModelInfo{
 		{ID: "gpt-5.2", Created: now + 20},
 	})
+	modelRegistry.RegisterClient("test-request-details-codex", "codex", []*registry.ModelInfo{
+		{ID: "gpt-5.4", Created: now + 15},
+	})
 	modelRegistry.RegisterClient("test-request-details-claude", "claude", []*registry.ModelInfo{
 		{ID: "claude-sonnet-4-5", Created: now + 5},
 	})
 
-	// Ensure cleanup of all test registrations.
 	clientIDs := []string{
 		"test-request-details-gemini",
 		"test-request-details-openai",
+		"test-request-details-codex",
 		"test-request-details-claude",
 	}
 	for _, clientID := range clientIDs {
@@ -62,6 +65,20 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 			wantErr:       false,
 		},
 		{
+			name:          "codex reasoning suffix routed before execution",
+			inputModel:    "gpt-5.4-high",
+			wantProviders: []string{"codex"},
+			wantModel:     "gpt-5.4-high",
+			wantErr:       false,
+		},
+		{
+			name:          "codex xhigh suffix routed before execution",
+			inputModel:    "gpt-5.4-xhigh",
+			wantProviders: []string{"codex"},
+			wantModel:     "gpt-5.4-xhigh",
+			wantErr:       false,
+		},
+		{
 			name:          "no suffix unchanged",
 			inputModel:    "claude-sonnet-4-5",
 			wantProviders: []string{"claude"},
@@ -71,6 +88,13 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 		{
 			name:          "unknown model with suffix",
 			inputModel:    "unknown-model(8192)",
+			wantProviders: nil,
+			wantModel:     "",
+			wantErr:       true,
+		},
+		{
+			name:          "custom non codex suffix does not get rerouted",
+			inputModel:    "custom-model-high",
 			wantProviders: nil,
 			wantModel:     "",
 			wantErr:       true,

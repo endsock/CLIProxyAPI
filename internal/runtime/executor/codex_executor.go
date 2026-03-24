@@ -45,17 +45,7 @@ func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor
 func (e *CodexExecutor) Identifier() string { return "codex" }
 
 func normalizeCodexModelName(model string) string {
-	baseModel := strings.TrimSpace(thinking.ParseSuffix(model).ModelName)
-	if baseModel == "" {
-		return ""
-	}
-	if idx := strings.LastIndex(baseModel, "-"); idx > 0 {
-		suffix := strings.ToLower(strings.TrimSpace(baseModel[idx+1:]))
-		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" {
-			return strings.TrimSpace(baseModel[:idx])
-		}
-	}
-	return baseModel
+	return thinking.NormalizeCodexModelName(model)
 }
 
 // PrepareRequest injects Codex credentials into the outgoing HTTP request.
