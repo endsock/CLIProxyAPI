@@ -182,6 +182,27 @@ func TestSchedulerPick_GeminiVirtualParentUsesTwoLevelRotation(t *testing.T) {
 	}
 }
 
+func TestSchedulerPick_CodexReasoningSuffixMatchesBaseModelAuth(t *testing.T) {
+	t.Parallel()
+
+	registerSchedulerModels(t, "codex", "gpt-5.4", "codex-auth")
+	scheduler := newSchedulerForTest(
+		&RoundRobinSelector{},
+		&Auth{ID: "codex-auth", Provider: "codex"},
+	)
+
+	got, errPick := scheduler.pickSingle(context.Background(), "codex", "gpt-5.4-high", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickSingle() error = %v", errPick)
+	}
+	if got == nil {
+		t.Fatalf("pickSingle() auth = nil")
+	}
+	if got.ID != "codex-auth" {
+		t.Fatalf("pickSingle() auth.ID = %q, want %q", got.ID, "codex-auth")
+	}
+}
+
 func TestSchedulerPick_CodexWebsocketPrefersWebsocketEnabledSubset(t *testing.T) {
 	t.Parallel()
 

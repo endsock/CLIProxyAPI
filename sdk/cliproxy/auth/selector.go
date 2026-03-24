@@ -123,6 +123,10 @@ func authPriority(auth *Auth) int {
 }
 
 func canonicalModelKey(model string) string {
+	return canonicalModelKeyForProvider("", model)
+}
+
+func canonicalModelKeyForProvider(provider, model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return ""
@@ -130,7 +134,10 @@ func canonicalModelKey(model string) string {
 	parsed := thinking.ParseSuffix(model)
 	modelName := strings.TrimSpace(parsed.ModelName)
 	if modelName == "" {
-		return model
+		modelName = model
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return thinking.NormalizeCodexModelName(modelName)
 	}
 	return modelName
 }

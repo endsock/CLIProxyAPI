@@ -176,7 +176,7 @@ func (s *authScheduler) pickSingle(ctx context.Context, provider, model string, 
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
-	modelKey := canonicalModelKey(model)
+	modelKey := canonicalModelKeyForProvider(providerKey, model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerKey == "codex" && pinnedAuthID == ""
 
@@ -220,7 +220,6 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		return nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	modelKey := canonicalModelKey(model)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -233,7 +232,7 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		if providerState == nil {
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
-		shard := providerState.ensureModelLocked(modelKey, time.Now())
+		shard := providerState.ensureModelLocked(canonicalModelKeyForProvider(providerKey, model), time.Now())
 		predicate := func(entry *scheduledAuth) bool {
 			if entry == nil || entry.auth == nil || entry.auth.ID != pinnedAuthID {
 				return false
@@ -260,7 +259,7 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		if providerState == nil {
 			continue
 		}
-		shard := providerState.ensureModelLocked(modelKey, now)
+		shard := providerState.ensureModelLocked(canonicalModelKeyForProvider(providerKey, model), now)
 		candidateShards[providerIndex] = shard
 		if shard == nil {
 			continue
@@ -292,7 +291,8 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
 	}
 
-	cursorKey := strings.Join(normalized, ",") + ":" + modelKey
+	cursorKeyModel := canonicalModelKey(model)
+	cursorKey := strings.Join(normalized, ",") + ":" + cursorKeyModel
 	start := 0
 	if len(normalized) > 0 {
 		start = s.mixedCursors[cursorKey] % len(normalized)
@@ -325,7 +325,7 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if providerState == nil {
 			continue
 		}
-		shard := providerState.ensureModelLocked(canonicalModelKey(model), now)
+		shard := providerState.ensureModelLocked(canonicalModelKeyForProvider(providerKey, model), now)
 		if shard == nil {
 			continue
 		}
@@ -455,12 +455,12 @@ func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
 		priority:          authPriority(auth),
 		virtualParent:     virtualParent,
 		websocketEnabled:  authWebsocketsEnabled(auth),
-		supportedModelSet: supportedModelSetForAuth(auth.ID),
+		supportedModelSet: supportedModelSetForAuth(auth.ID, auth.Provider),
 	}
 }
 
 // supportedModelSetForAuth snapshots the registry models currently registered for an auth.
-func supportedModelSetForAuth(authID string) map[string]struct{} {
+func supportedModelSetForAuth(authID, provider string) map[string]struct{} {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {
 		return nil
@@ -474,7 +474,7 @@ func supportedModelSetForAuth(authID string) map[string]struct{} {
 		if model == nil {
 			continue
 		}
-		modelKey := canonicalModelKey(model.ID)
+		modelKey := canonicalModelKeyForProvider(provider, model.ID)
 		if modelKey == "" {
 			continue
 		}
