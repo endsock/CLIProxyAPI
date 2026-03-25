@@ -51,13 +51,27 @@ func TestNormalizeCodexModelNameStripsReasoningSuffix(t *testing.T) {
 }
 
 func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) {
-	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil)
+	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil, nil)
 
 	if got := headers.Get("OpenAI-Beta"); got != codexResponsesWebsocketBetaHeaderValue {
 		t.Fatalf("OpenAI-Beta = %s, want %s", got, codexResponsesWebsocketBetaHeaderValue)
 	}
+	if got := headers.Get("Version"); got != codexClientVersion {
+		t.Fatalf("Version = %s, want %s", got, codexClientVersion)
+	}
 	if got := headers.Get("User-Agent"); got != codexUserAgent {
 		t.Fatalf("User-Agent = %s, want %s", got, codexUserAgent)
+	}
+	if got := headers.Get("x-codex-turn-metadata"); got != codexResponsesWebsocketTurnMetadata {
+		t.Fatalf("x-codex-turn-metadata = %q, want %q", got, codexResponsesWebsocketTurnMetadata)
+	}
+	if got := headers.Get("Session_id"); got == "" {
+		t.Fatal("Session_id is empty")
+	} else if requestID := headers.Get("x-client-request-id"); requestID != got {
+		t.Fatalf("x-client-request-id = %q, want %q", requestID, got)
+	}
+	if got := headers.Get("Conversation_id"); got != "" {
+		t.Fatalf("Conversation_id = %q, want empty", got)
 	}
 	if got := headers.Get("x-codex-beta-features"); got != "" {
 		t.Fatalf("x-codex-beta-features = %q, want empty", got)
@@ -76,7 +90,7 @@ func TestApplyCodexWebsocketHeadersUsesConfigDefaultsForOAuth(t *testing.T) {
 		Metadata: map[string]any{"email": "user@example.com"},
 	}
 
-	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "", cfg)
+	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "", cfg, nil)
 
 	if got := headers.Get("User-Agent"); got != "my-codex-client/1.0" {
 		t.Fatalf("User-Agent = %s, want %s", got, "my-codex-client/1.0")
@@ -108,7 +122,7 @@ func TestApplyCodexWebsocketHeadersPrefersExistingHeadersOverClientAndConfig(t *
 	headers.Set("User-Agent", "existing-ua")
 	headers.Set("X-Codex-Beta-Features", "existing-beta")
 
-	got := applyCodexWebsocketHeaders(ctx, headers, auth, "", cfg)
+	got := applyCodexWebsocketHeaders(ctx, headers, auth, "", cfg, nil)
 
 	if gotVal := got.Get("User-Agent"); gotVal != "existing-ua" {
 		t.Fatalf("User-Agent = %s, want %s", gotVal, "existing-ua")
@@ -134,7 +148,7 @@ func TestApplyCodexWebsocketHeadersConfigUserAgentOverridesClientHeader(t *testi
 		"X-Codex-Beta-Features": "client-beta",
 	})
 
-	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", cfg)
+	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", cfg, nil)
 
 	if got := headers.Get("User-Agent"); got != "config-ua" {
 		t.Fatalf("User-Agent = %s, want %s", got, "config-ua")
@@ -156,7 +170,7 @@ func TestApplyCodexWebsocketHeadersIgnoresConfigForAPIKeyAuth(t *testing.T) {
 		Attributes: map[string]string{"api_key": "sk-test"},
 	}
 
-	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "sk-test", cfg)
+	headers := applyCodexWebsocketHeaders(context.Background(), http.Header{}, auth, "sk-test", cfg, nil)
 
 	if got := headers.Get("User-Agent"); got != codexUserAgent {
 		t.Fatalf("User-Agent = %s, want %s", got, codexUserAgent)
@@ -192,6 +206,26 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	}
 	if got := req.Header.Get("x-codex-beta-features"); got != "" {
 		t.Fatalf("x-codex-beta-features = %q, want empty", got)
+	}
+}
+
+func TestApplyCodexWebsocketHeadersReusesSessionIDFromWebsocketSession(t *testing.T) {
+	sess := &codexWebsocketSession{upstreamSessionID: "sess-fixed"}
+
+	first := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil, sess)
+	if got := first.Get("Session_id"); got != "sess-fixed" {
+		t.Fatalf("first Session_id = %q, want %q", got, "sess-fixed")
+	}
+	if got := first.Get("x-client-request-id"); got != "sess-fixed" {
+		t.Fatalf("first x-client-request-id = %q, want %q", got, "sess-fixed")
+	}
+
+	second := applyCodexWebsocketHeaders(context.Background(), http.Header{}, nil, "", nil, sess)
+	if got := second.Get("Session_id"); got != "sess-fixed" {
+		t.Fatalf("second Session_id = %q, want %q", got, "sess-fixed")
+	}
+	if got := second.Get("x-client-request-id"); got != "sess-fixed" {
+		t.Fatalf("second x-client-request-id = %q, want %q", got, "sess-fixed")
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 
 const (
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
+	codexResponsesWebsocketTurnMetadata    = `{"turn_id":"","sandbox":"windows_sandbox"}`
 	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
 )
@@ -49,7 +50,8 @@ type CodexWebsocketsExecutor struct {
 }
 
 type codexWebsocketSession struct {
-	sessionID string
+	sessionID         string
+	upstreamSessionID string
 
 	reqMu sync.Mutex
 
@@ -190,22 +192,22 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
 	if executionSessionID != "" {
 		sess = e.getOrCreateSession(executionSessionID)
 		sess.reqMu.Lock()
 		defer sess.reqMu.Unlock()
+	}
+
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, sess)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
 	}
 
 	wsReqBody := buildCodexWebsocketRequestBody(body)
@@ -386,14 +388,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
-	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
-
-	var authID, authLabel, authType, authValue string
-	authID = auth.ID
-	authLabel = auth.Label
-	authType, authValue = auth.AccountInfo()
-
 	executionSessionID := executionSessionIDFromOptions(opts)
 	var sess *codexWebsocketSession
 	if executionSessionID != "" {
@@ -402,6 +396,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			sess.reqMu.Lock()
 		}
 	}
+
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, sess)
+
+	var authID, authLabel, authType, authValue string
+	authID = auth.ID
+	authLabel = auth.Label
+	authType, authValue = auth.AccountInfo()
 
 	wsReqBody := buildCodexWebsocketRequestBody(body)
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
@@ -791,14 +793,13 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
-		headers.Set("Conversation_id", cache.ID)
 		headers.Set("Session_id", cache.ID)
 	}
 
 	return rawJSON, headers
 }
 
-func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config) http.Header {
+func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, cfg *config.Config, sess *codexWebsocketSession) http.Header {
 	if headers == nil {
 		headers = http.Header{}
 	}
@@ -814,7 +815,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	cfgUserAgent, cfgBetaFeatures := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithPriority(headers, ginHeaders, "x-codex-beta-features", cfgBetaFeatures, "")
 	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-state", "")
-	misc.EnsureHeader(headers, ginHeaders, "x-codex-turn-metadata", "")
+	headers.Set("x-codex-turn-metadata", codexResponsesWebsocketTurnMetadata)
 	misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 
 	misc.EnsureHeader(headers, ginHeaders, "Version", codexClientVersion)
@@ -826,7 +827,21 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		betaHeader = codexResponsesWebsocketBetaHeaderValue
 	}
 	headers.Set("OpenAI-Beta", betaHeader)
-	misc.EnsureHeader(headers, ginHeaders, "Session_id", uuid.NewString())
+	sessionID := strings.TrimSpace(headers.Get("Session_id"))
+	if sessionID == "" && sess != nil {
+		sessionID = strings.TrimSpace(sess.upstreamSessionID)
+	}
+	if sessionID == "" && ginHeaders != nil {
+		sessionID = strings.TrimSpace(ginHeaders.Get("Session_id"))
+	}
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
+	if sess != nil {
+		sess.upstreamSessionID = sessionID
+	}
+	headers.Set("Session_id", sessionID)
+	headers.Set("x-client-request-id", sessionID)
 	ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
 
 	isAPIKey := false

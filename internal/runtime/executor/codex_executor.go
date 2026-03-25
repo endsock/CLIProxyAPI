@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	codexClientVersion = "0.101.0"
-	codexUserAgent     = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
+	codexClientVersion = "0.116.0"
+	codexUserAgent     = "codex_cli_rs/0.116.0 (Windows 10.0.19045; x86_64) WindowsTerminal/1.21"
 )
 
 var dataTag = []byte("data:")
@@ -634,7 +634,6 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		return nil, err
 	}
 	if cache.ID != "" {
-		httpReq.Header.Set("Conversation_id", cache.ID)
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
