@@ -3,8 +3,10 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	utls "github.com/refraction-networking/utls"
+	"github.com
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -24,7 +28,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/proxyutil"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	utls "github.com/refraction-networking/utls"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -36,6 +40,9 @@ const (
 	codexResponsesWebsocketTurnMetadata    = `{"turn_id":"","sandbox":"windows_sandbox"}`
 	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
+	codexResponsesWebsocketJA3FullString   = "771,49196-49195-49200-49199-159-158-49188-49187-49192-49191-49162-49161-49172-49171-157-156-61-60-53-47-10,0-10-11-13-35-23-65281,29-23-24,0"
+	codexResponsesWebsocketJA3Hash         = "3b5074b1b5d032e5620f69f9f700ff0e"
+	codexResponsesWebsocketJA4             = "t12d210700_76e208dd3e22_2dae41c691ec"
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -688,14 +695,31 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 }
 
 func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *websocket.Dialer {
-	dialer := &websocket.Dialer{
-		Proxy:             http.ProxyFromEnvironment,
+	tcpDialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialCodexWebsocketTCP(ctx, cfg, auth, network, addr)
+	}
+	return &websocket.Dialer{
+		Proxy:             nil,
 		HandshakeTimeout:  codexResponsesWebsocketHandshakeTO,
 		EnableCompression: true,
-		NetDialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		NetDialContext:    tcpDialContext,
+		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			rawConn, err := dialCodexWebsocketTCP(ctx, cfg, auth, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return wrapCodexWebsocketUTLSConn(ctx, rawConn, hostNoPort(addr), false)
+		},
+	}
+}
+
+func dialCodexWebsocketTCP(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, network, addr string) (net.Conn, error) {
+	baseDialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	proxyURL := ""
@@ -706,22 +730,21 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 		proxyURL = strings.TrimSpace(cfg.ProxyURL)
 	}
 	if proxyURL == "" {
-		return dialer
+		return baseDialer.DialContext(ctx, network, addr)
 	}
 
 	setting, errParse := proxyutil.Parse(proxyURL)
 	if errParse != nil {
 		log.Errorf("codex websockets executor: %v", errParse)
-		return dialer
+		return baseDialer.DialContext(ctx, network, addr)
 	}
 
 	switch setting.Mode {
-	case proxyutil.ModeDirect:
-		dialer.Proxy = nil
-		return dialer
+	case proxyutil.ModeDirect, proxyutil.ModeInherit:
+		return baseDialer.DialContext(ctx, network, addr)
 	case proxyutil.ModeProxy:
 	default:
-		return dialer
+		return baseDialer.DialContext(ctx, network, addr)
 	}
 
 	switch setting.URL.Scheme {
@@ -734,20 +757,231 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 		}
 		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", setting.URL.Host, proxyAuth, proxy.Direct)
 		if errSOCKS5 != nil {
-			log.Errorf("codex websockets executor: create SOCKS5 dialer failed: %v", errSOCKS5)
-			return dialer
+			return nil, fmt.Errorf("codex websockets executor: create SOCKS5 dialer failed: %w", errSOCKS5)
 		}
-		dialer.Proxy = nil
-		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
-		}
+		return dialCodexWebsocketViaContext(ctx, socksDialer, network, addr)
 	case "http", "https":
-		dialer.Proxy = http.ProxyURL(setting.URL)
+		return dialCodexWebsocketHTTPTunnel(ctx, baseDialer, setting.URL, network, addr)
 	default:
-		log.Errorf("codex websockets executor: unsupported proxy scheme: %s", setting.URL.Scheme)
+		return nil, fmt.Errorf("codex websockets executor: unsupported proxy scheme: %s", setting.URL.Scheme)
+	}
+}
+
+func dialCodexWebsocketViaContext(ctx context.Context, dialer proxy.Dialer, network, addr string) (net.Conn, error) {
+	if dialer == nil {
+		return nil, fmt.Errorf("codex websockets executor: proxy dialer is nil")
+	}
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, network, addr)
+	}
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	resultCh := make(chan dialResult, 1)
+	go func() {
+		conn, err := dialer.Dial(network, addr)
+		resultCh <- dialResult{conn: conn, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-resultCh:
+		return result.conn, result.err
+	}
+}
+
+func dialCodexWebsocketHTTPTunnel(ctx context.Context, baseDialer *net.Dialer, proxyURL *url.URL, network, addr string) (net.Conn, error) {
+	if proxyURL == nil {
+		return nil, fmt.Errorf("codex websockets executor: proxy URL is nil")
+	}
+	proxyAddr := proxyURL.Host
+	if !strings.Contains(proxyAddr, ":") {
+		if strings.EqualFold(proxyURL.Scheme, "https") {
+			proxyAddr += ":443"
+		} else {
+			proxyAddr += ":80"
+		}
 	}
 
-	return dialer
+	conn, err := baseDialer.DialContext(ctx, network, proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.EqualFold(proxyURL.Scheme, "https") {
+		conn, err = wrapCodexWebsocketUTLSConn(ctx, conn, proxyURL.Hostname(), true)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := sendCodexHTTPProxyConnect(ctx, conn, proxyURL, addr); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func sendCodexHTTPProxyConnect(ctx context.Context, conn net.Conn, proxyURL *url.URL, targetAddr string) error {
+	if conn == nil {
+		return fmt.Errorf("codex websockets executor: proxy connection is nil")
+	}
+	if proxyURL == nil {
+		return fmt.Errorf("codex websockets executor: proxy URL is nil")
+	}
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = conn.SetDeadline(deadline)
+			defer conn.SetDeadline(time.Time{})
+		}
+	}
+
+	request := &http.Request{
+		Method: "CONNECT",
+		URL:    &url.URL{Opaque: targetAddr},
+		Host:   targetAddr,
+		Header: make(http.Header),
+	}
+	request.Header.Set("Host", targetAddr)
+	if proxyURL.User != nil {
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		request.Header.Set("Proxy-Authorization", "Basic "+auth)
+	}
+
+	if err := request.Write(conn); err != nil {
+		return err
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, request)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		if len(body) == 0 {
+			return fmt.Errorf("codex websockets executor: proxy CONNECT failed: %s", resp.Status)
+		}
+		return fmt.Errorf("codex websockets executor: proxy CONNECT failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if reader.Buffered() > 0 {
+		return fmt.Errorf("codex websockets executor: proxy CONNECT left buffered bytes")
+	}
+	return nil
+}
+
+func wrapCodexWebsocketUTLSConn(ctx context.Context, rawConn net.Conn, serverName string, insecureSkipVerify bool) (net.Conn, error) {
+	if rawConn == nil {
+		return nil, fmt.Errorf("codex websockets executor: raw connection is nil")
+	}
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		_ = rawConn.Close()
+		return nil, fmt.Errorf("codex websockets executor: server name is empty")
+	}
+
+	log.Infof("codex websockets: using fixed uTLS fingerprint server=%s ja3=%s ja3_hash=%s ja4=%s", serverName, codexResponsesWebsocketJA3FullString, codexResponsesWebsocketJA3Hash, codexResponsesWebsocketJA4)
+
+	utls.EnableWeakCiphers()
+	cfg := &utls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: insecureSkipVerify,
+		MinVersion:         utls.VersionTLS12,
+		MaxVersion:         utls.VersionTLS12,
+	}
+	tlsConn := utls.UClient(rawConn, cfg, utls.HelloCustom)
+	spec := buildCodexWebsocketTLS12Spec()
+	if err := tlsConn.ApplyPreset(&spec); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	tlsConn.HandshakeState.Hello.SessionId = nil
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = tlsConn.SetDeadline(deadline)
+			defer tlsConn.SetDeadline(time.Time{})
+		}
+	}
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = tlsConn.Close()
+		return nil, err
+	}
+	if !insecureSkipVerify {
+		if err := tlsConn.VerifyHostname(serverName); err != nil {
+			_ = tlsConn.Close()
+			return nil, err
+		}
+	}
+	return tlsConn, nil
+}
+
+func buildCodexWebsocketTLS12Spec() utls.ClientHelloSpec {
+	return utls.ClientHelloSpec{
+		TLSVersMin: utls.VersionTLS12,
+		TLSVersMax: utls.VersionTLS12,
+		CipherSuites: []uint16{
+			utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			utls.FAKE_TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
+			utls.FAKE_TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+			utls.DISABLED_TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+			utls.DISABLED_TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			utls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+			utls.DISABLED_TLS_RSA_WITH_AES_256_CBC_SHA256,
+			utls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+			utls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			utls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			utls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []utls.TLSExtension{
+			&utls.SNIExtension{},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
+				utls.X25519,
+				utls.CurveP256,
+				utls.CurveP384,
+			}},
+			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				utls.PSSWithSHA256,
+				utls.PSSWithSHA384,
+				utls.PSSWithSHA512,
+				utls.PKCS1WithSHA256,
+				utls.PKCS1WithSHA384,
+				utls.PKCS1WithSHA1,
+				utls.ECDSAWithP256AndSHA256,
+				utls.ECDSAWithP384AndSHA384,
+				utls.ECDSAWithSHA1,
+				utls.FakeSHA1WithDSA,
+				utls.PKCS1WithSHA512,
+				utls.ECDSAWithP521AndSHA512,
+			}},
+			&utls.SessionTicketExtension{},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
+		},
+	}
+}
+
+func hostNoPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err == nil {
+		return host
+	}
+	return strings.Trim(addr, "[]")
 }
 
 func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
