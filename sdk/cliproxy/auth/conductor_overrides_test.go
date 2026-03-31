@@ -230,3 +230,48 @@ func TestManager_MarkResult_RespectsAuthDisableCoolingOverride(t *testing.T) {
 		t.Fatalf("expected NextRetryAfter to be zero when disable_cooling=true, got %v", state.NextRetryAfter)
 	}
 }
+
+func TestManager_MarkResult_EnforcesMinimumQuotaCooldown(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-429", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5-codex"
+	m.MarkResult(context.Background(), Result{
+		AuthID:     auth.ID,
+		Provider:   auth.Provider,
+		Model:      model,
+		Success:    false,
+		RetryAfter: durationPtr(5 * time.Second),
+		Error:      &Error{HTTPStatus: 429, Message: "quota"},
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	state := updated.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state to be present")
+	}
+	cooldown := state.NextRetryAfter.Sub(state.UpdatedAt)
+	if cooldown < time.Minute {
+		t.Fatalf("expected cooldown >= 1m, got %v", cooldown)
+	}
+	if !state.Quota.Exceeded {
+		t.Fatalf("expected quota exceeded to be true")
+	}
+	if state.Quota.NextRecoverAt.Before(state.UpdatedAt.Add(time.Minute)) {
+		t.Fatalf("expected next recover at >= updatedAt + 1m, got %v", state.Quota.NextRecoverAt)
+	}
+}
+
+func durationPtr(v time.Duration) *time.Duration {
+	return &v
+}

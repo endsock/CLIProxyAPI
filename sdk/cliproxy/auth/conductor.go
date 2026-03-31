@@ -63,7 +63,7 @@ const (
 	refreshMaxConcurrency = 16
 	refreshPendingBackoff = time.Minute
 	refreshFailureBackoff = 5 * time.Minute
-	quotaBackoffBase      = time.Second
+	quotaBackoffBase      = time.Minute
 	quotaBackoffMax       = 30 * time.Minute
 )
 
@@ -1592,6 +1592,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	var authSnapshot *Auth
+	cooldownLogLine := ""
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -1647,7 +1648,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					var next time.Time
 					backoffLevel := state.Quota.BackoffLevel
 					if result.RetryAfter != nil {
-						next = now.Add(*result.RetryAfter)
+						retryAfter := *result.RetryAfter
+						if retryAfter < quotaBackoffBase {
+							retryAfter = quotaBackoffBase
+						}
+						next = now.Add(retryAfter)
 					} else {
 						cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
 						if cooldown > 0 {
@@ -1661,6 +1666,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						Reason:        "quota",
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
+					}
+					if !next.IsZero() {
+						cooldownLogLine = logQuotaCooldownLine(auth, result.Provider, result.Model, next, now)
 					}
 					suspendReason = "quota"
 					shouldSuspendModel = true
@@ -1681,6 +1689,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				updateAggregatedAvailability(auth, now)
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
+				if result.Error != nil && result.Error.StatusCode() == 429 && !auth.NextRetryAfter.IsZero() {
+					cooldownLogLine = logQuotaCooldownLine(auth, result.Provider, result.Model, auth.NextRetryAfter, now)
+				}
 			}
 		}
 
@@ -1690,6 +1701,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+	}
+
+	if cooldownLogLine != "" {
+		logEntryWithRequestID(ctx).Warn(cooldownLogLine)
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -1932,7 +1947,11 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 		var next time.Time
 		if retryAfter != nil {
-			next = now.Add(*retryAfter)
+			effectiveRetryAfter := *retryAfter
+			if effectiveRetryAfter < quotaBackoffBase {
+				effectiveRetryAfter = quotaBackoffBase
+			}
+			next = now.Add(effectiveRetryAfter)
 		} else {
 			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, quotaCooldownDisabledForAuth(auth))
 			if cooldown > 0 {
@@ -1954,6 +1973,30 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "request failed"
 		}
 	}
+}
+
+func logQuotaCooldownLine(auth *Auth, provider, model string, next, now time.Time) string {
+	if auth == nil || next.IsZero() {
+		return ""
+	}
+	providerName := strings.TrimSpace(provider)
+	if providerName == "" {
+		providerName = strings.TrimSpace(auth.Provider)
+	}
+	modelName := strings.TrimSpace(model)
+	if modelName == "" {
+		modelName = "<unknown>"
+	}
+	cooldown := next.Sub(now)
+	if cooldown < 0 {
+		cooldown = 0
+	}
+	return "credential hit 429 and entered cooldown" +
+		" provider=" + providerName +
+		" auth_id=" + strings.TrimSpace(auth.ID) +
+		" model=" + modelName +
+		" cooldown=" + cooldown.Round(time.Second).String() +
+		" retry_at=" + next.Format(time.RFC3339)
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
