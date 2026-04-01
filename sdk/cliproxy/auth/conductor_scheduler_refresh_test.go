@@ -161,3 +161,48 @@ func TestManager_PickNext_RebuildsSchedulerAfterModelCooldownError(t *testing.T)
 		t.Fatalf("pickNext() auth = %v, want %q", got, newAuth.ID)
 	}
 }
+
+func TestManager_MarkResultCanonicalizesCodexModelStateKey(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "codex"})
+
+	const authID = "codex-cooldown-auth"
+	registerSchedulerModels(t, "codex", "gpt-5.4", authID)
+
+	auth := &Auth{
+		ID:       authID,
+		Provider: "codex",
+	}
+	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	manager.MarkResult(ctx, Result{
+		AuthID:   authID,
+		Provider: "codex",
+		Model:    "gpt-5.4-high",
+		Success:  false,
+		Error:    &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	stored, ok := manager.GetByID(authID)
+	if !ok || stored == nil {
+		t.Fatalf("GetByID(%q) failed", authID)
+	}
+	if stored.ModelStates["gpt-5.4"] == nil {
+		t.Fatalf("ModelStates[%q] = nil, want state", "gpt-5.4")
+	}
+	if _, exists := stored.ModelStates["gpt-5.4-high"]; exists {
+		t.Fatalf("ModelStates[%q] exists, want canonical key only", "gpt-5.4-high")
+	}
+
+	got, errPick := manager.scheduler.pickSingle(ctx, "codex", "gpt-5.4-high", cliproxyexecutor.Options{}, nil)
+	var cooldownErr2 *modelCooldownError
+	if !errors.As(errPick, &cooldownErr2) {
+		t.Fatalf("pickSingle() error = %v, want modelCooldownError", errPick)
+	}
+	if got != nil {
+		t.Fatalf("pickSingle() auth = %v, want nil", got)
+	}
+}

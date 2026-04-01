@@ -1726,14 +1726,18 @@ func ensureModelState(auth *Auth, model string) *ModelState {
 	if auth == nil || model == "" {
 		return nil
 	}
+	modelKey := canonicalModelKeyForProvider(auth.Provider, model)
+	if modelKey == "" {
+		return nil
+	}
 	if auth.ModelStates == nil {
 		auth.ModelStates = make(map[string]*ModelState)
 	}
-	if state, ok := auth.ModelStates[model]; ok && state != nil {
+	if state, ok := auth.ModelStates[modelKey]; ok && state != nil {
 		return state
 	}
 	state := &ModelState{Status: StatusActive}
-	auth.ModelStates[model] = state
+	auth.ModelStates[modelKey] = state
 	return state
 }
 
