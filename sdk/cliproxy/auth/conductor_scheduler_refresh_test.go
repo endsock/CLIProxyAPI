@@ -178,13 +178,15 @@ func TestManager_MarkResultCanonicalizesCodexModelStateKey(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	manager.MarkResult(ctx, Result{
-		AuthID:   authID,
-		Provider: "codex",
-		Model:    "gpt-5.4-high",
-		Success:  false,
-		Error:    &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
-	})
+	for i := 0; i < 3; i++ {
+		manager.MarkResult(ctx, Result{
+			AuthID:   authID,
+			Provider: "codex",
+			Model:    "gpt-5.4-high",
+			Success:  false,
+			Error:    &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+		})
+	}
 
 	stored, ok := manager.GetByID(authID)
 	if !ok || stored == nil {
@@ -198,6 +200,22 @@ func TestManager_MarkResultCanonicalizesCodexModelStateKey(t *testing.T) {
 	}
 
 	got, errPick := manager.scheduler.pickSingle(ctx, "codex", "gpt-5.4-high", cliproxyexecutor.Options{}, nil)
+	if errPick != nil {
+		t.Fatalf("pickSingle() before threshold error = %v", errPick)
+	}
+	if got == nil || got.ID != authID {
+		t.Fatalf("pickSingle() before threshold auth = %v, want %q", got, authID)
+	}
+
+	manager.MarkResult(ctx, Result{
+		AuthID:   authID,
+		Provider: "codex",
+		Model:    "gpt-5.4-high",
+		Success:  false,
+		Error:    &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"},
+	})
+
+	got, errPick = manager.scheduler.pickSingle(ctx, "codex", "gpt-5.4-high", cliproxyexecutor.Options{}, nil)
 	var cooldownErr2 *modelCooldownError
 	if !errors.As(errPick, &cooldownErr2) {
 		t.Fatalf("pickSingle() error = %v, want modelCooldownError", errPick)

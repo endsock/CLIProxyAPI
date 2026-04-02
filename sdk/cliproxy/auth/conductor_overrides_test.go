@@ -243,6 +243,38 @@ func TestManager_MarkResult_EnforcesMinimumQuotaCooldown(t *testing.T) {
 	}
 
 	model := "gpt-5-codex"
+	for i := 0; i < 3; i++ {
+		m.MarkResult(context.Background(), Result{
+			AuthID:     auth.ID,
+			Provider:   auth.Provider,
+			Model:      model,
+			Success:    false,
+			RetryAfter: durationPtr(5 * time.Second),
+			Error:      &Error{HTTPStatus: 429, Message: "quota"},
+		})
+
+		updated, ok := m.GetByID(auth.ID)
+		if !ok || updated == nil {
+			t.Fatalf("expected auth to be present after soft 429 #%d", i+1)
+		}
+		state := updated.ModelStates[model]
+		if state == nil {
+			t.Fatalf("expected model state to be present after soft 429 #%d", i+1)
+		}
+		if state.Unavailable {
+			t.Fatalf("expected state.Unavailable=false before threshold, got true on attempt %d", i+1)
+		}
+		if !state.NextRetryAfter.IsZero() {
+			t.Fatalf("expected zero NextRetryAfter before threshold, got %v on attempt %d", state.NextRetryAfter, i+1)
+		}
+		if state.Quota.Exceeded {
+			t.Fatalf("expected quota exceeded=false before threshold on attempt %d", i+1)
+		}
+		if state.Quota.Consecutive429 != i+1 {
+			t.Fatalf("expected consecutive429=%d, got %d", i+1, state.Quota.Consecutive429)
+		}
+	}
+
 	m.MarkResult(context.Background(), Result{
 		AuthID:     auth.ID,
 		Provider:   auth.Provider,
@@ -267,8 +299,49 @@ func TestManager_MarkResult_EnforcesMinimumQuotaCooldown(t *testing.T) {
 	if !state.Quota.Exceeded {
 		t.Fatalf("expected quota exceeded to be true")
 	}
+	if state.Quota.Consecutive429 != 4 {
+		t.Fatalf("expected consecutive429=4, got %d", state.Quota.Consecutive429)
+	}
 	if state.Quota.NextRecoverAt.Before(state.UpdatedAt.Add(time.Minute)) {
 		t.Fatalf("expected next recover at >= updatedAt + 1m, got %v", state.Quota.NextRecoverAt)
+	}
+}
+
+func TestManager_MarkResult_Codex429CounterResetsAfterSuccess(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	auth := &Auth{ID: "auth-reset", Provider: "codex"}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5-codex"
+	for i := 0; i < 2; i++ {
+		m.MarkResult(context.Background(), Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Model:    model,
+			Success:  false,
+			Error:    &Error{HTTPStatus: 429, Message: "quota"},
+		})
+	}
+
+	m.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    model,
+		Success:  true,
+	})
+
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	state := updated.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state to be present")
+	}
+	if state.Quota.Consecutive429 != 0 {
+		t.Fatalf("expected consecutive429 reset to 0, got %d", state.Quota.Consecutive429)
 	}
 }
 
