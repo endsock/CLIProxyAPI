@@ -105,8 +105,6 @@ type QuotaState struct {
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.
 	BackoffLevel int `json:"backoff_level,omitempty"`
-	// Consecutive429 counts consecutive 429 responses for threshold-based cooldowns.
-	Consecutive429 int `json:"consecutive_429,omitempty"`
 }
 
 // ModelState captures the execution state for a specific model under an auth entry.

@@ -83,36 +83,6 @@ func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabled.Load()
 }
 
-func quota429Threshold(auth *Auth) int {
-	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-		return 4
-	}
-	return 1
-}
-
-func shouldEnterQuotaCooldown(auth *Auth, quota *QuotaState) bool {
-	if quota == nil {
-		return false
-	}
-	return quota.Consecutive429 >= quota429Threshold(auth)
-}
-
-func markQuotaSoftFailure(quota *QuotaState) {
-	if quota == nil {
-		return
-	}
-	quota.Exceeded = false
-	quota.Reason = ""
-	quota.NextRecoverAt = time.Time{}
-}
-
-func resetQuota429Counter(quota *QuotaState) {
-	if quota == nil {
-		return
-	}
-	quota.Consecutive429 = 0
-}
-
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.
@@ -1660,59 +1630,50 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				statusCode := statusCodeFromResult(result.Error)
 				switch statusCode {
 				case 401:
-					resetQuota429Counter(&state.Quota)
 					next := now.Add(30 * time.Minute)
 					state.NextRetryAfter = next
 					suspendReason = "unauthorized"
 					shouldSuspendModel = true
 				case 402, 403:
-					resetQuota429Counter(&state.Quota)
 					next := now.Add(30 * time.Minute)
 					state.NextRetryAfter = next
 					suspendReason = "payment_required"
 					shouldSuspendModel = true
 				case 404:
-					resetQuota429Counter(&state.Quota)
 					next := now.Add(12 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "not_found"
 					shouldSuspendModel = true
 				case 429:
-					state.Quota.Consecutive429++
-					if shouldEnterQuotaCooldown(auth, &state.Quota) {
-						var next time.Time
-						backoffLevel := state.Quota.BackoffLevel
-						if result.RetryAfter != nil {
-							retryAfter := *result.RetryAfter
-							if retryAfter < quotaBackoffBase {
-								retryAfter = quotaBackoffBase
-							}
-							next = now.Add(retryAfter)
-						} else {
-							cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
-							if cooldown > 0 {
-								next = now.Add(cooldown)
-							}
-							backoffLevel = nextLevel
+					var next time.Time
+					backoffLevel := state.Quota.BackoffLevel
+					if result.RetryAfter != nil {
+						retryAfter := *result.RetryAfter
+						if retryAfter < quotaBackoffBase {
+							retryAfter = quotaBackoffBase
 						}
-						state.NextRetryAfter = next
-						state.Quota.Exceeded = true
-						state.Quota.Reason = "quota"
-						state.Quota.NextRecoverAt = next
-						state.Quota.BackoffLevel = backoffLevel
-						if !next.IsZero() {
-							cooldownLogLine = logQuotaCooldownLine(auth, result.Provider, result.Model, next, now)
-						}
-						suspendReason = "quota"
-						shouldSuspendModel = true
-						setModelQuota = true
+						next = now.Add(retryAfter)
 					} else {
-						state.Unavailable = false
-						state.NextRetryAfter = time.Time{}
-						markQuotaSoftFailure(&state.Quota)
+						cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
+						if cooldown > 0 {
+							next = now.Add(cooldown)
+						}
+						backoffLevel = nextLevel
 					}
+					state.NextRetryAfter = next
+					state.Quota = QuotaState{
+						Exceeded:      true,
+						Reason:        "quota",
+						NextRecoverAt: next,
+						BackoffLevel:  backoffLevel,
+					}
+					if !next.IsZero() {
+						cooldownLogLine = logQuotaCooldownLine(auth, result.Provider, result.Model, next, now)
+					}
+					suspendReason = "quota"
+					shouldSuspendModel = true
+					setModelQuota = true
 				case 408, 500, 502, 503, 504:
-					resetQuota429Counter(&state.Quota)
 					if quotaCooldownDisabledForAuth(auth) {
 						state.NextRetryAfter = time.Time{}
 					} else {
@@ -1720,7 +1681,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						state.NextRetryAfter = next
 					}
 				default:
-					resetQuota429Counter(&state.Quota)
 					state.NextRetryAfter = time.Time{}
 				}
 
@@ -1882,7 +1842,10 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Unavailable = false
 	auth.Status = StatusActive
 	auth.StatusMessage = ""
-	auth.Quota = QuotaState{}
+	auth.Quota.Exceeded = false
+	auth.Quota.Reason = ""
+	auth.Quota.NextRecoverAt = time.Time{}
+	auth.Quota.BackoffLevel = 0
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
@@ -1974,46 +1937,35 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	statusCode := statusCodeFromResult(resultErr)
 	switch statusCode {
 	case 401:
-		resetQuota429Counter(&auth.Quota)
 		auth.StatusMessage = "unauthorized"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)
 	case 402, 403:
-		resetQuota429Counter(&auth.Quota)
 		auth.StatusMessage = "payment_required"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)
 	case 404:
-		resetQuota429Counter(&auth.Quota)
 		auth.StatusMessage = "not_found"
 		auth.NextRetryAfter = now.Add(12 * time.Hour)
 	case 429:
-		auth.Quota.Consecutive429++
-		if shouldEnterQuotaCooldown(auth, &auth.Quota) {
-			auth.StatusMessage = "quota exhausted"
-			auth.Quota.Exceeded = true
-			auth.Quota.Reason = "quota"
-			var next time.Time
-			if retryAfter != nil {
-				effectiveRetryAfter := *retryAfter
-				if effectiveRetryAfter < quotaBackoffBase {
-					effectiveRetryAfter = quotaBackoffBase
-				}
-				next = now.Add(effectiveRetryAfter)
-			} else {
-				cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, quotaCooldownDisabledForAuth(auth))
-				if cooldown > 0 {
-					next = now.Add(cooldown)
-				}
-				auth.Quota.BackoffLevel = nextLevel
+		auth.StatusMessage = "quota exhausted"
+		auth.Quota.Exceeded = true
+		auth.Quota.Reason = "quota"
+		var next time.Time
+		if retryAfter != nil {
+			effectiveRetryAfter := *retryAfter
+			if effectiveRetryAfter < quotaBackoffBase {
+				effectiveRetryAfter = quotaBackoffBase
 			}
-			auth.Quota.NextRecoverAt = next
-			auth.NextRetryAfter = next
+			next = now.Add(effectiveRetryAfter)
 		} else {
-			auth.Unavailable = false
-			auth.NextRetryAfter = time.Time{}
-			markQuotaSoftFailure(&auth.Quota)
+			cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, quotaCooldownDisabledForAuth(auth))
+			if cooldown > 0 {
+				next = now.Add(cooldown)
+			}
+			auth.Quota.BackoffLevel = nextLevel
 		}
+		auth.Quota.NextRecoverAt = next
+		auth.NextRetryAfter = next
 	case 408, 500, 502, 503, 504:
-		resetQuota429Counter(&auth.Quota)
 		auth.StatusMessage = "transient upstream error"
 		if quotaCooldownDisabledForAuth(auth) {
 			auth.NextRetryAfter = time.Time{}
@@ -2021,7 +1973,6 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.NextRetryAfter = now.Add(1 * time.Minute)
 		}
 	default:
-		resetQuota429Counter(&auth.Quota)
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
 		}
