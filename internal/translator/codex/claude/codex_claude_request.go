@@ -88,7 +88,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 * 文件代码行数较多时，例如：超过600行。要使用Edit工具修改文件
 * 模仿claude的风格回复用户\n
 * 生成代码时，可读性一定要好，便于人类理解，但不需要很多注释。在保证逻辑清晰，正确的基础上要做到代码精炼，用最少的代码做最多的事情，但是不能破坏可读性。\n
-* 修改代码逻辑的准则：应该探索研究掌握完整的逻辑链条，然后使用最小改动方案。\n`
+* 修改代码逻辑的准则：应该探索研究掌握完整的逻辑链条，然后使用最小改动方案。\n
+* 用户提问时，优先分析项目相关源码解决用户的问题，而不是使用web_search。当向用户讲解时，应该给出代码片段以及代码所在位置。
+* 回答用户时，要像claude那样根据情况使用一些文本符号，例如：✅❌等符号\n`
 	appendSystemText(additionalDeveloperPrompt)
 
 	if contentIndex > 0 {
