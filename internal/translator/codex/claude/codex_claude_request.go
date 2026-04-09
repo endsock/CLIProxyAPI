@@ -61,6 +61,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		if text == "" || strings.HasPrefix(text, "x-anthropic-billing-header: ") {
 			return
 		}
+		if text == "" || strings.HasPrefix(text, "You are Claude Code") {
+			return
+		}
 
 		message, _ = sjson.Set(message, fmt.Sprintf("content.%d.type", contentIndex), "input_text")
 		message, _ = sjson.Set(message, fmt.Sprintf("content.%d.text", contentIndex), text)
