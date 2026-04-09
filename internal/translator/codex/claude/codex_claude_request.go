@@ -61,7 +61,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		if text == "" || strings.HasPrefix(text, "x-anthropic-billing-header: ") {
 			return
 		}
-		if text == "" || strings.HasPrefix(text, "You are Claude Code") {
+
+		text = strings.ReplaceAll(text, "Claude Code", "Codex")
+		if text == "" {
 			return
 		}
 
