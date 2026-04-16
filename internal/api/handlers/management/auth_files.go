@@ -802,6 +802,7 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+	coreauth.RestoreCooldownStateFromMetadata(auth, time.Now())
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}

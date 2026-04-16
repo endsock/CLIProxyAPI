@@ -527,3 +527,53 @@ func TestRoundRobinSelectorPick_MixedVirtualAndNonVirtualFallsBackToFlat(t *test
 		}
 	}
 }
+
+func TestFillFirstSelectorPick_RestoredCooldownStateSkipsAuth(t *testing.T) {
+	t.Parallel()
+
+	selector := &FillFirstSelector{}
+	now := time.Now()
+	model := "test-model"
+
+	cooling := &Auth{
+		ID: "cooling",
+		Metadata: map[string]any{
+			"cooldown_state": map[string]any{
+				"status":           "error",
+				"status_message":   "quota exhausted",
+				"unavailable":      true,
+				"next_retry_after": now.Add(10 * time.Minute).UTC().Format(time.RFC3339),
+				"quota": map[string]any{
+					"exceeded":        true,
+					"reason":          "quota",
+					"next_recover_at": now.Add(10 * time.Minute).UTC().Format(time.RFC3339),
+				},
+				"model_states": map[string]any{
+					model: map[string]any{
+						"status":           "error",
+						"unavailable":      true,
+						"next_retry_after": now.Add(10 * time.Minute).UTC().Format(time.RFC3339),
+						"quota": map[string]any{
+							"exceeded":        true,
+							"reason":          "quota",
+							"next_recover_at": now.Add(10 * time.Minute).UTC().Format(time.RFC3339),
+						},
+					},
+				},
+			},
+		},
+	}
+	RestoreCooldownStateFromMetadata(cooling, now)
+	available := &Auth{ID: "available"}
+
+	got, err := selector.Pick(context.Background(), "codex", model, cliproxyexecutor.Options{}, []*Auth{cooling, available})
+	if err != nil {
+		t.Fatalf("Pick() error = %v", err)
+	}
+	if got == nil {
+		t.Fatalf("Pick() auth = nil")
+	}
+	if got.ID != "available" {
+		t.Fatalf("Pick() auth.ID = %q, want %q", got.ID, "available")
+	}
+}

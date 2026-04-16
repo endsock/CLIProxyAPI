@@ -832,7 +832,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 			auth.Index = existing.Index
 			auth.indexAssigned = existing.indexAssigned
 		}
-		if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+		if auth.ModelStates == nil && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
 		}
 	}
@@ -1695,6 +1695,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
+		SyncCooldownStateToMetadata(auth)
 		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
@@ -1752,6 +1753,191 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.LastError = nil
 	state.Quota = QuotaState{}
 	state.UpdatedAt = now
+}
+
+const cooldownStateMetadataKey = "cooldown_state"
+
+type cooldownStateRecord struct {
+	Status         Status                 `json:"status,omitempty"`
+	StatusMessage  string                 `json:"status_message,omitempty"`
+	Unavailable    bool                   `json:"unavailable,omitempty"`
+	NextRetryAfter time.Time              `json:"next_retry_after,omitempty"`
+	Quota          QuotaState             `json:"quota,omitempty"`
+	LastError      *Error                 `json:"last_error,omitempty"`
+	ModelStates    map[string]*ModelState `json:"model_states,omitempty"`
+	UpdatedAt      time.Time              `json:"updated_at,omitempty"`
+}
+
+// SyncCooldownStateToMetadata mirrors runtime cooldown state into auth.Metadata["cooldown_state"].
+func SyncCooldownStateToMetadata(auth *Auth) {
+	if auth == nil {
+		return
+	}
+	record := cooldownStateRecord{}
+	if auth.Status == StatusError || auth.Status == StatusDisabled {
+		record.Status = auth.Status
+	}
+	if auth.StatusMessage != "" {
+		record.StatusMessage = auth.StatusMessage
+	}
+	if auth.Unavailable {
+		record.Unavailable = true
+	}
+	if !auth.NextRetryAfter.IsZero() {
+		record.NextRetryAfter = auth.NextRetryAfter.UTC()
+	}
+	if auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() || auth.Quota.BackoffLevel != 0 || auth.Quota.Reason != "" {
+		record.Quota = auth.Quota
+		if !record.Quota.NextRecoverAt.IsZero() {
+			record.Quota.NextRecoverAt = record.Quota.NextRecoverAt.UTC()
+		}
+	}
+	if auth.LastError != nil {
+		record.LastError = cloneError(auth.LastError)
+	}
+	if !auth.UpdatedAt.IsZero() {
+		record.UpdatedAt = auth.UpdatedAt.UTC()
+	}
+	for model, state := range auth.ModelStates {
+		if !shouldPersistCooldownModelState(state) {
+			continue
+		}
+		if record.ModelStates == nil {
+			record.ModelStates = make(map[string]*ModelState)
+		}
+		copyState := state.Clone()
+		if !copyState.NextRetryAfter.IsZero() {
+			copyState.NextRetryAfter = copyState.NextRetryAfter.UTC()
+		}
+		if !copyState.Quota.NextRecoverAt.IsZero() {
+			copyState.Quota.NextRecoverAt = copyState.Quota.NextRecoverAt.UTC()
+		}
+		if !copyState.UpdatedAt.IsZero() {
+			copyState.UpdatedAt = copyState.UpdatedAt.UTC()
+		}
+		record.ModelStates[model] = copyState
+	}
+	if !hasCooldownStateRecord(record) {
+		if auth.Metadata != nil {
+			delete(auth.Metadata, cooldownStateMetadataKey)
+		}
+		return
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	raw, errMarshal := json.Marshal(record)
+	if errMarshal != nil {
+		return
+	}
+	var metadata map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &metadata); errUnmarshal != nil {
+		return
+	}
+	auth.Metadata[cooldownStateMetadataKey] = metadata
+}
+
+// RestoreCooldownStateFromMetadata restores runtime cooldown fields from auth.Metadata["cooldown_state"].
+func RestoreCooldownStateFromMetadata(auth *Auth, now time.Time) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	raw, ok := auth.Metadata[cooldownStateMetadataKey]
+	if !ok || raw == nil {
+		return
+	}
+	data, errMarshal := json.Marshal(raw)
+	if errMarshal != nil {
+		delete(auth.Metadata, cooldownStateMetadataKey)
+		return
+	}
+	var record cooldownStateRecord
+	if errUnmarshal := json.Unmarshal(data, &record); errUnmarshal != nil {
+		delete(auth.Metadata, cooldownStateMetadataKey)
+		return
+	}
+	if record.Status != "" {
+		auth.Status = record.Status
+	}
+	auth.StatusMessage = record.StatusMessage
+	auth.Unavailable = record.Unavailable
+	auth.NextRetryAfter = record.NextRetryAfter
+	auth.Quota = record.Quota
+	auth.LastError = cloneError(record.LastError)
+	if len(record.ModelStates) > 0 {
+		auth.ModelStates = make(map[string]*ModelState, len(record.ModelStates))
+		for model, state := range record.ModelStates {
+			if state == nil {
+				continue
+			}
+			auth.ModelStates[model] = state.Clone()
+		}
+	}
+	normalizeExpiredCooldown(auth, now)
+	SyncCooldownStateToMetadata(auth)
+}
+
+func hasCooldownStateRecord(record cooldownStateRecord) bool {
+	return record.Unavailable || !record.NextRetryAfter.IsZero() || record.Quota.Exceeded || !record.Quota.NextRecoverAt.IsZero() || len(record.ModelStates) > 0
+}
+
+func shouldPersistCooldownModelState(state *ModelState) bool {
+	if state == nil {
+		return false
+	}
+	if state.Status == StatusError || state.Status == StatusDisabled {
+		return true
+	}
+	if state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil {
+		return true
+	}
+	return state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() || state.Quota.BackoffLevel != 0 || state.Quota.Reason != ""
+}
+
+func isCooldownWindowActive(nextRetryAfter time.Time, quota QuotaState, now time.Time) bool {
+	if !nextRetryAfter.IsZero() && nextRetryAfter.After(now) {
+		return true
+	}
+	return !quota.NextRecoverAt.IsZero() && quota.NextRecoverAt.After(now)
+}
+
+func normalizeExpiredCooldown(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	for model, state := range auth.ModelStates {
+		if state == nil {
+			delete(auth.ModelStates, model)
+			continue
+		}
+		if state.Status != StatusDisabled && !isCooldownWindowActive(state.NextRetryAfter, state.Quota, now) {
+			if state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() {
+				resetModelState(state, now)
+			}
+		}
+		if !shouldPersistCooldownModelState(state) {
+			delete(auth.ModelStates, model)
+		}
+	}
+	if len(auth.ModelStates) == 0 {
+		auth.ModelStates = nil
+	}
+	if len(auth.ModelStates) > 0 {
+		updateAggregatedAvailability(auth, now)
+		if hasModelError(auth, now) {
+			auth.Status = StatusError
+		} else if auth.Status != StatusDisabled && !auth.Unavailable && !auth.Quota.Exceeded {
+			auth.Status = StatusActive
+			auth.StatusMessage = ""
+			auth.LastError = nil
+		}
+		return
+	}
+	if auth.Status != StatusDisabled && !isCooldownWindowActive(auth.NextRetryAfter, auth.Quota, now) {
+		if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() {
+			clearAuthStateOnSuccess(auth, now)
+		}
+	}
 }
 
 func updateAggregatedAvailability(auth *Auth, now time.Time) {

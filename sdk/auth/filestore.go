@@ -251,6 +251,10 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},
 	}
+	cliproxyauth.RestoreCooldownStateFromMetadata(auth, time.Now())
+	if auth.Disabled {
+		auth.Status = cliproxyauth.StatusDisabled
+	}
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		auth.Attributes["email"] = email
 	}
