@@ -351,7 +351,7 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 
 func validateModelSection(section string, models []*ModelInfo) error {
 	if len(models) == 0 {
-		return fmt.Errorf("%s section is empty", section)
+		return nil
 	}
 
 	seen := make(map[string]struct{}, len(models))
