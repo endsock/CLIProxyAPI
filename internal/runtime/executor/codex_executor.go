@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	codexClientVersion = "0.116.0"
-	codexUserAgent     = "codex_cli_rs/0.116.0 (Windows 10.0.19045; x86_64) WindowsTerminal/1.21"
+	codexClientVersion = "0.134.0"
+	codexUserAgent     = "codex_cli_rs/0.134.0 (Windows 10.0.19045; x86_64) WindowsTerminal/1.21"
 )
 
 var dataTag = []byte("data:")
