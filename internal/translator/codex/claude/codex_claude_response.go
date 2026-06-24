@@ -64,8 +64,9 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 	typeStr := typeResult.String()
 	template := ""
 	if typeStr == "response.created" {
-		template = `{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-1-20250805","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`
-		template, _ = sjson.Set(template, "message.model", rootResult.Get("response.model").String())
+		template = `{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-7","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`
+		// template, _ = sjson.Set(template, "message.model", rootResult.Get("response.model").String())
+		template, _ = sjson.Set(template, "message.model", "claude-opus-4-7")
 		template, _ = sjson.Set(template, "message.id", rootResult.Get("response.id").String())
 
 		output = "event: message_start\n"
