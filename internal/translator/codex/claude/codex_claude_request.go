@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -51,6 +52,11 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	}
 
 	template, _ = sjson.Set(template, "model", actualModelName)
+	if metadataResult := rootResult.Get("metadata"); metadataResult.Exists() {
+		if promptCacheKey := extractPromptCacheKeyFromMetadataUserID(metadataResult.Get("user_id").String()); promptCacheKey != "" {
+			template, _ = sjson.Set(template, "prompt_cache_key", promptCacheKey)
+		}
+	}
 
 	// Process system messages and convert them to input content format.
 	systemsResult := rootResult.Get("system")
@@ -425,4 +431,18 @@ func normalizeToolParameters(raw string) string {
 		schema, _ = sjson.SetRaw(schema, "properties", `{}`)
 	}
 	return schema
+}
+
+func extractPromptCacheKeyFromMetadataUserID(userID string) string {
+	const sessionPrefix = "session_"
+	idx := strings.LastIndex(userID, sessionPrefix)
+	if idx < 0 {
+		return ""
+	}
+
+	candidate := userID[idx+len(sessionPrefix):]
+	if _, err := uuid.Parse(candidate); err != nil {
+		return ""
+	}
+	return candidate
 }

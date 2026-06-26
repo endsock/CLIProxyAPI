@@ -23,6 +23,35 @@ func TestConvertClaudeRequestToCodex_ModelSuffixSetsReasoningEffort(t *testing.T
 	}
 }
 
+func TestConvertClaudeRequestToCodex_PromptCacheKeyFromMetadataUserID(t *testing.T) {
+	inputJSON := `{
+		"metadata": {
+			"user_id": "user_db5478165de382ee7ef1552c734b902cc17d2030c83bd0e401969e057d954035_account__session_70d9f9d3-fe61-47e6-92fe-b695ae06a4ac"
+		},
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	if got := resultJSON.Get("prompt_cache_key").String(); got != "70d9f9d3-fe61-47e6-92fe-b695ae06a4ac" {
+		t.Fatalf("prompt_cache_key = %q, want %q", got, "70d9f9d3-fe61-47e6-92fe-b695ae06a4ac")
+	}
+}
+
+func TestConvertClaudeRequestToCodex_NoMetadataDoesNotSetPromptCacheKey(t *testing.T) {
+	inputJSON := `{
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	if got := resultJSON.Get("prompt_cache_key").String(); got != "" {
+		t.Fatalf("prompt_cache_key = %q, want empty", got)
+	}
+}
+
 func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 	tests := []struct {
 		name      string
