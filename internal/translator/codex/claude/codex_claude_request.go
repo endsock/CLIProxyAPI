@@ -45,7 +45,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	reasoningEffort := "medium"
 	if idx := strings.LastIndex(modelName, "-"); idx > 0 {
 		suffix := strings.ToLower(modelName[idx+1:])
-		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" {
+		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" || suffix == "max" || suffix == "ultra" {
 			actualModelName = modelName[:idx]
 			reasoningEffort = suffix
 		}
