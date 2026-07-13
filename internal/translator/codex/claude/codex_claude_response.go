@@ -65,8 +65,7 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 	template := ""
 	if typeStr == "response.created" {
 		template = `{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-7","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`
-		// template, _ = sjson.Set(template, "message.model", rootResult.Get("response.model").String())
-		template, _ = sjson.Set(template, "message.model", "claude-opus-4-7")
+		template, _ = sjson.Set(template, "message.model", claudeResponseModel(rootResult.Get("response.model").String()))
 		template, _ = sjson.Set(template, "message.id", rootResult.Get("response.id").String())
 
 		output = "event: message_start\n"
@@ -231,7 +230,7 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 
 	out := `{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`
 	out, _ = sjson.Set(out, "id", responseData.Get("id").String())
-	out, _ = sjson.Set(out, "model", responseData.Get("model").String())
+	out, _ = sjson.Set(out, "model", claudeResponseModel(responseData.Get("model").String()))
 	inputTokens, outputTokens, cachedTokens := extractResponsesUsage(responseData.Get("usage"))
 	out, _ = sjson.Set(out, "usage.input_tokens", inputTokens)
 	out, _ = sjson.Set(out, "usage.output_tokens", outputTokens)
@@ -341,6 +340,13 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	}
 
 	return out
+}
+
+func claudeResponseModel(codexModel string) string {
+	if codexModel == "gpt-5.6-sol" {
+		return "claude-fable-5"
+	}
+	return "claude-opus-4-7"
 }
 
 func extractResponsesUsage(usage gjson.Result) (int64, int64, int64) {
