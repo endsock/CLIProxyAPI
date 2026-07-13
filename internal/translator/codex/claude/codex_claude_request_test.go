@@ -23,6 +23,23 @@ func TestConvertClaudeRequestToCodex_ModelSuffixSetsReasoningEffort(t *testing.T
 	}
 }
 
+func TestConvertClaudeRequestToCodex_UltraSuffixSetsReasoningEffort(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-5.6-terra-ultra",
+		"messages": [{"role": "user", "content": "hello"}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("gpt-5.6-terra-ultra", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	if got := resultJSON.Get("model").String(); got != "gpt-5.6-terra" {
+		t.Fatalf("model = %q, want %q", got, "gpt-5.6-terra")
+	}
+	if got := resultJSON.Get("reasoning.effort").String(); got != "ultra" {
+		t.Fatalf("reasoning.effort = %q, want %q", got, "ultra")
+	}
+}
+
 func TestConvertClaudeRequestToCodex_PromptCacheKeyFromMetadataUserID(t *testing.T) {
 	inputJSON := `{
 		"metadata": {

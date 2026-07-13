@@ -15,7 +15,7 @@ func NormalizeCodexModelName(model string) string {
 	}
 	if idx := strings.LastIndex(baseModel, "-"); idx > 0 {
 		suffix := strings.ToLower(strings.TrimSpace(baseModel[idx+1:]))
-		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" {
+		if suffix == "low" || suffix == "medium" || suffix == "high" || suffix == "xhigh" || suffix == "max" || suffix == "ultra" {
 			return strings.TrimSpace(baseModel[:idx])
 		}
 	}
