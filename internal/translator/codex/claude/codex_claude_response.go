@@ -96,7 +96,7 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 		output = append(output, codexStreamErrorToClaudeError(rootResult)...)
 	case "response.created":
 		template = []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-1-20250805","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`)
-		template, _ = sjson.SetBytes(template, "message.model", rootResult.Get("response.model").String())
+		template, _ = sjson.SetBytes(template, "message.model", codexClaudeResponseModelName(originalRequestRawJSON, rootResult.Get("response.model").String()))
 		template, _ = sjson.SetBytes(template, "message.id", rootResult.Get("response.id").String())
 
 		output = translatorcommon.AppendSSEEventBytes(output, "message_start", template, 2)
@@ -351,7 +351,7 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", responseData.Get("id").String())
-	out, _ = sjson.SetBytes(out, "model", responseData.Get("model").String())
+	out, _ = sjson.SetBytes(out, "model", codexClaudeResponseModelName(originalRequestRawJSON, responseData.Get("model").String()))
 	inputTokens, outputTokens, cachedTokens := extractResponsesUsage(responseData.Get("usage"))
 	out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
 	out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
@@ -768,6 +768,16 @@ func finalizeCodexOpenContentBlocks(params *ConvertCodexResponseToClaudeParams) 
 	output = append(output, stopCodexTextBlock(params)...)
 	output = appendCodexOpenFunctionCallStop(output, params)
 	return output
+}
+
+// codexClaudeResponseModelName returns the client-visible model name from the
+// original request payload when present, falling back to the upstream model
+// name reported by the Codex response.
+func codexClaudeResponseModelName(originalRequestRawJSON []byte, fallback string) string {
+	if model := gjson.GetBytes(originalRequestRawJSON, "model").String(); model != "" {
+		return model
+	}
+	return fallback
 }
 
 func resolveCodexClaudeToolUseName(originalRequestRawJSON []byte, name string) string {
