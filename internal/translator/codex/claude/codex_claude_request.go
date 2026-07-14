@@ -49,7 +49,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 
 	// Process system messages and convert them to input content format.
 	systemsResult := rootResult.Get("system")
-	if systemsResult.Exists() {
+	extraSystemPrompt := getExtraSystemPrompt()
+	if systemsResult.Exists() || extraSystemPrompt != "" {
 		message := []byte(`{"type":"message","role":"developer","content":[]}`)
 		contentIndex := 0
 
@@ -74,6 +75,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				}
 			}
 		}
+
+		appendSystemText(extraSystemPrompt)
 
 		if contentIndex > 0 {
 			template, _ = sjson.SetRawBytes(template, "input.-1", message)

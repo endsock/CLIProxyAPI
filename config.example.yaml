@@ -184,6 +184,9 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
+  # Extra text appended to the system prompt when translating Claude Code requests
+  # into the Codex request format. Empty by default (no extra prompt added).
+  extra-system-prompt: ""
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: true

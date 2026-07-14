@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
+	codexclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/codex/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -538,6 +539,7 @@ func main() {
 		cfg.AuthDir = resolvedAuthDir
 	}
 	managementasset.SetCurrentConfig(cfg)
+	codexclaude.SetExtraSystemPrompt(cfg.Codex.ExtraSystemPrompt)
 
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{

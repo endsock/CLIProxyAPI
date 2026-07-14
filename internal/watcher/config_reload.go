@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	codexclaude "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/codex/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	"gopkg.in/yaml.v3"
@@ -118,6 +119,7 @@ func (w *Watcher) reloadConfig() bool {
 	}
 
 	util.SetLogLevel(newConfig)
+	codexclaude.SetExtraSystemPrompt(newConfig.Codex.ExtraSystemPrompt)
 	if oldConfig != nil && oldConfig.Debug != newConfig.Debug {
 		log.Debugf("log level updated - debug mode changed from %t to %t", oldConfig.Debug, newConfig.Debug)
 	}

@@ -283,6 +283,10 @@ type CodexHeaderDefaults struct {
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
+
+	// ExtraSystemPrompt is appended to the system prompt when translating Claude Code
+	// requests into the Codex request format. Empty by default (no extra prompt added).
+	ExtraSystemPrompt string `yaml:"extra-system-prompt" json:"extra-system-prompt"`
 }
 
 // TLSConfig holds HTTPS server settings.
