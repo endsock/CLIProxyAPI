@@ -52,9 +52,6 @@ func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 		return payload
 	}
 	tools := gjson.GetBytes(payload, "request.tools")
-	if !tools.IsArray() || len(tools.Array()) == 0 {
-		return payload
-	}
 	state.preferPowerShell = requestPrefersPowerShell(tools)
 	mcpDecls := extractClaudeMCPDeclarations(tools)
 	replaced := agyNativeToolsCatalogArray

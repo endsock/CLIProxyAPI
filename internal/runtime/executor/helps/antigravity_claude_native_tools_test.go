@@ -136,12 +136,20 @@ func TestRewriteRequestToolsNoOpWithoutAnnotation(t *testing.T) {
 	}
 }
 
-func TestRewriteRequestToolsNoOpWithoutTools(t *testing.T) {
+func TestRewriteRequestToolsInjectsCatalogWhenToolsEmpty(t *testing.T) {
 	payload := []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`)
 	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
 	got := RewriteRequestTools(ctx, payload)
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("payload without tools mutated")
+	names := toolDeclNames(got)
+	if len(names) != 12 {
+		t.Fatalf("tool count = %d (%v), want 12", len(names), names)
+	}
+	if !containsName(names, "view_file") || !containsName(names, "run_command") {
+		t.Fatalf("agy catalog missing: %v", names)
+	}
+	si := gjson.GetBytes(got, "request.systemInstruction")
+	if !bytes.Contains([]byte(si.Get("parts.0.text").String()), []byte("<identity>")) {
+		t.Fatalf("missing AGY identity prompt in systemInstruction: %s", si.Raw)
 	}
 }
 
