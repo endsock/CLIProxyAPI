@@ -100,6 +100,8 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 	messagesResult := rootResult.Get("messages")
 	if messagesResult.IsArray() {
 		messageResults := messagesResult.Array()
+		var pendingToolUseIDs []string
+		var pendingSystemReminders [][]byte
 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
@@ -108,12 +110,20 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(messageResult.Get("content")); ok {
 					message := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`)
 					message, _ = sjson.SetBytes(message, "content.0.text", reminderText)
-					inputItems = append(inputItems, message)
+					if len(pendingToolUseIDs) > 0 {
+						pendingSystemReminders = append(pendingSystemReminders, message)
+					} else {
+						inputItems = append(inputItems, message)
+					}
 				}
 				continue
 			}
 
 			messageContentsResult := messageResult.Get("content")
+			if messageRole == "user" && len(pendingToolUseIDs) > 0 && messageContentsResult.IsArray() {
+				messageContentsResult = translatorcommon.AlignClaudeToolResults(messageContentsResult, pendingToolUseIDs)
+			}
+			pendingToolUseIDs = nil
 			contentItems := make([][]byte, 0, 4)
 
 			flushMessage := func() {
@@ -184,10 +194,18 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 
 					switch contentType {
 					case "text":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
 						appendTextContent(messageContentResult.Get("text").String())
 					case "thinking":
 						appendReasoningContent(messageContentResult)
 					case "image":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
 						sourceResult := messageContentResult.Get("source")
 						if sourceResult.Exists() {
 							data := sourceResult.Get("data").String()
@@ -207,6 +225,10 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 							}
 						}
 					case "document":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
 						sourceResult := messageContentResult.Get("source")
 						if sourceResult.Get("type").String() != "base64" {
 							continue
@@ -224,6 +246,9 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 						}
 					case "tool_use":
 						flushMessage()
+						if id := messageContentResult.Get("id").String(); id != "" {
+							pendingToolUseIDs = append(pendingToolUseIDs, id)
+						}
 						functionCallMessage := []byte(`{"type":"function_call"}`)
 						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "call_id", shortenCodexCallIDIfNeeded(messageContentResult.Get("id").String()))
 						{
@@ -289,12 +314,23 @@ func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, 
 					}
 				}
 				flushMessage()
+				if len(pendingSystemReminders) > 0 {
+					inputItems = append(inputItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 			} else if messageContentsResult.Type == gjson.String {
 				appendTextContent(messageContentsResult.String())
 				flushMessage()
+				if len(pendingSystemReminders) > 0 {
+					inputItems = append(inputItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 			}
 		}
 
+		if len(pendingSystemReminders) > 0 {
+			inputItems = append(inputItems, pendingSystemReminders...)
+		}
 	}
 
 	// Convert tools declarations to the expected format for the Codex API.
