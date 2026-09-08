@@ -263,6 +263,12 @@ codex:
   # normalizes encrypted agent_message content for Codex, and converts agent_message input
   # into standard user messages for non-Codex upstream protocols.
   optimize-multi-agent-v2: false
+  # When true, enable opt-in compatibility for orphan Codex delegation outputs.
+  # Converts orphan function_call_output items from codex_app/create_thread and
+  # codex_app/send_message_to_thread (which lack a valid call_id or matching function_call)
+  # into standard user messages across Responses and non-Codex protocols when the request
+  # header contains X-Openai-Subagent: collab_spawn.
+  orphan-delegation-compatibility: false
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:
@@ -295,6 +301,10 @@ codex:
 #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
 #     - "API"
 #     - "proxy"
+#   connection-pool:             # optional: upstream HTTP connection pool settings
+#     enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
+#     idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
+#     max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
 
 # xAI provider behavior.
 xai:
@@ -844,6 +854,11 @@ nonstream-keepalive-interval: 0
 #           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
 #       params: # JSON path (gjson/sjson syntax) -> value
 #         "reasoning.effort": "high"
+#     - models:
+#         - name: "claude-fable-5-1"
+#           protocol: "claude"
+#       params:
+#         max_tokens: 128000 # override the final Claude Messages output budget after protocol translation
 #   override-raw: # Override raw rules always set parameters using raw JSON (must be valid JSON).
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
