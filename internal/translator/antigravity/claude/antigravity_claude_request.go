@@ -20,6 +20,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// Tool response paths keep Claude execution status explicit in Gemini function responses.
+const (
+	antigravityToolResponseResultPath = "response.result"
+	antigravityToolResponseErrorPath  = "response.error"
+)
+
 func resolveThinkingSignature(modelName, thinkingText, rawSignature string) string {
 	signature, errSignature := resolveThinkingSignatureRequired(context.Background(), modelName, thinkingText, rawSignature)
 	if errSignature != nil {
@@ -642,6 +648,12 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								log.Warnf("antigravity claude request: tool_result references unknown tool_use_id=%s, derived function name=%s", toolCallID, funcName)
 							}
 							functionResponseResult := contentResult.Get("content")
+							responsePath := antigravityToolResponseResultPath
+							// Reason: Reporting a failed execution as a result hides the failure from Gemini
+							// and can trigger identical retries.
+							if contentResult.Get("is_error").Type == gjson.True {
+								responsePath = antigravityToolResponseErrorPath
+							}
 
 							functionResponseJSON := []byte(`{}`)
 							functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, "id", toolCallID)
@@ -650,7 +662,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							responseData := ""
 							if functionResponseResult.Type == gjson.String {
 								responseData = functionResponseResult.String()
-								functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, "response.result", responseData)
+								functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, responseData)
 							} else if functionResponseResult.IsArray() {
 								frResults := functionResponseResult.Array()
 								nonImageItems := make([][]byte, 0, len(frResults))
@@ -675,11 +687,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 								}
 
 								if len(nonImageItems) == 1 {
-									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "response.result", nonImageItems[0])
+									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, responsePath, nonImageItems[0])
 								} else if len(nonImageItems) > 1 {
-									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "response.result", translatorcommon.JoinRawArray(nonImageItems))
+									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, responsePath, translatorcommon.JoinRawArray(nonImageItems))
 								} else {
-									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, "response.result", "")
+									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
 								}
 
 								// Place image data inside functionResponse.parts as inlineData
@@ -702,16 +714,16 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 									imagePartJSON := []byte(`{}`)
 									imagePartJSON, _ = sjson.SetRawBytes(imagePartJSON, "inlineData", inlineDataJSON)
 									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "parts", translatorcommon.JoinRawArray([][]byte{imagePartJSON}))
-									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, "response.result", "")
+									functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
 								} else {
-									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "response.result", []byte(functionResponseResult.Raw))
+									functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, responsePath, []byte(functionResponseResult.Raw))
 								}
 							} else if functionResponseResult.Raw != "" {
-								functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, "response.result", []byte(functionResponseResult.Raw))
+								functionResponseJSON, _ = sjson.SetRawBytes(functionResponseJSON, responsePath, []byte(functionResponseResult.Raw))
 							} else {
 								// Content field is missing entirely — .Raw is empty which
 								// causes sjson.SetRaw to produce invalid JSON (e.g. "result":}).
-								functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, "response.result", "")
+								functionResponseJSON, _ = sjson.SetBytes(functionResponseJSON, responsePath, "")
 							}
 
 							partJSON := []byte(`{}`)

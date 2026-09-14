@@ -131,12 +131,29 @@ func mapViewFile(args gjson.Result, _ *claudeNativeToolsState) []mappedClaudeCal
 	return []mappedClaudeCall{{name: "Read", args: out}}
 }
 
-func mapListDir(args gjson.Result, _ *claudeNativeToolsState) []mappedClaudeCall {
-	out := map[string]any{}
-	if v := args.Get("DirectoryPath"); v.Exists() {
-		out["file_path"] = v.String()
+// mapListDir preserves directory enumeration instead of asking Read to open a directory.
+func mapListDir(args gjson.Result, state *claudeNativeToolsState) []mappedClaudeCall {
+	path := args.Get("DirectoryPath")
+	if path.Type != gjson.String || strings.TrimSpace(path.String()) == "" {
+		return nil
 	}
-	return []mappedClaudeCall{{name: "Read", args: out}}
+	name, command := "Bash", "ls -la -- "+quoteAntigravityShellLiteral(path.String(), false)
+	if state != nil && state.preferPowerShell {
+		name = "PowerShell"
+		command = "Get-ChildItem -Force -LiteralPath " + quoteAntigravityShellLiteral(path.String(), true)
+	}
+	return []mappedClaudeCall{{name: name, args: map[string]any{
+		"command":     command,
+		"description": "List directory contents",
+	}}}
+}
+
+// quoteAntigravityShellLiteral keeps model-supplied paths from becoming shell syntax.
+func quoteAntigravityShellLiteral(value string, powerShell bool) string {
+	if powerShell {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func mapWriteToFile(args gjson.Result, _ *claudeNativeToolsState) []mappedClaudeCall {

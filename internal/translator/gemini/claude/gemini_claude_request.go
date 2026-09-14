@@ -17,7 +17,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
+// Claude-to-Gemini constants preserve thought validation and tool execution semantics.
+const (
+	geminiClaudeThoughtSignature = "skip_thought_signature_validator"
+	geminiToolResponseResultPath = "functionResponse.response.result"
+	geminiToolResponseErrorPath  = "functionResponse.response.error"
+)
 
 // ConvertClaudeRequestToGemini parses a Claude API request and returns a complete
 // Gemini request body (as JSON bytes) ready to be sent via SendRawMessageStream.
@@ -172,13 +177,19 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						}
 						funcName = util.SanitizeFunctionName(funcName)
 						toolResult := util.ConvertClaudeToolResultContent(contentResult.Get("content"))
-						part := []byte(`{"functionResponse":{"name":"","response":{"result":""}}}`)
+						responsePath := geminiToolResponseResultPath
+						// Reason: Reporting a failed execution as a result hides the failure from Gemini
+						// and can trigger identical retries.
+						if contentResult.Get("is_error").Type == gjson.True {
+							responsePath = geminiToolResponseErrorPath
+						}
+						part := []byte(`{"functionResponse":{"name":"","response":{}}}`)
 						part, _ = sjson.SetBytes(part, "functionResponse.id", toolCallID)
 						part, _ = sjson.SetBytes(part, "functionResponse.name", funcName)
 						if toolResult.ResultIsRaw {
-							part, _ = sjson.SetRawBytes(part, "functionResponse.response.result", []byte(toolResult.Result))
+							part, _ = sjson.SetRawBytes(part, responsePath, []byte(toolResult.Result))
 						} else {
-							part, _ = sjson.SetBytes(part, "functionResponse.response.result", toolResult.Result)
+							part, _ = sjson.SetBytes(part, responsePath, toolResult.Result)
 						}
 						partItems = append(partItems, part)
 						for _, img := range toolResult.Images {

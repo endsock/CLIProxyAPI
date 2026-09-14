@@ -311,6 +311,13 @@ func applyAntigravityReasoningReplayCache(ctx context.Context, modelName string,
 	if opts.SourceFormat.String() == "claude" {
 		toolSchemas = antigravityReplayToolSchemasFromRequests(opts.OriginalRequest, req.Payload)
 	}
+	// Reason: Client-visible names/args produce different opaque IDs than the
+	// native calls recorded in the ledger. Restore that bridge before matching.
+	bridged, errBridge := helps.RestoreClaudeNativeToolHistory(ctx, payload, items)
+	if errBridge != nil {
+		return payload, scope, false, errBridge
+	}
+	payload = bridged
 	updated, changed := applyAntigravityReasoningReplayItems(payload, items, toolSchemas)
 	if reservedBefore > 0 {
 		log.Debugf("antigravity replay: ledger items=%d reserved before=%d after=%d applied=%t (session=%s)",
