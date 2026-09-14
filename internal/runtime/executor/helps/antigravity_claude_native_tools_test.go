@@ -187,9 +187,9 @@ func TestMapResponseFunctionCallsArgs(t *testing.T) {
 		{
 			name:     "list_dir",
 			body:     functionCallBody("list_dir", `{"DirectoryPath":"/tmp"}`),
-			wantName: "Read",
+			wantName: "Bash",
 			check: func(t *testing.T, args gjson.Result) {
-				if args.Get("file_path").String() != "/tmp" {
+				if args.Get("command").String() != "ls -la -- '/tmp'" || args.Get("file_path").Exists() {
 					t.Fatalf("args=%s", args.Raw)
 				}
 			},
