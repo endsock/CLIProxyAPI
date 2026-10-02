@@ -1,11 +1,87 @@
 package registry
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestCodexConfigurationUpdateCapability(t *testing.T) {
+	for _, tier := range []struct {
+		name    string
+		models  func() []*ModelInfo
+		capable []string
+	}{
+		{name: "free", models: GetCodexFreeModels, capable: []string{"gpt-6-luna"}},
+		{name: "team", models: GetCodexTeamModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+		{name: "plus", models: GetCodexPlusModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+		{name: "pro", models: GetCodexProModels, capable: []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"}},
+	} {
+		t.Run(tier.name, func(t *testing.T) {
+			byID := make(map[string]*ModelInfo)
+			for _, info := range tier.models() {
+				if info != nil {
+					byID[info.ID] = info
+				}
+			}
+			for _, id := range append([]string{"gpt-5.5"}, tier.capable...) {
+				info := byID[id]
+				if info == nil {
+					t.Errorf("%s is missing", id)
+					continue
+				}
+				want := id != "gpt-5.5"
+				if info.SupportConfigurationUpdate != want {
+					t.Errorf("%s configuration_update = %v, want %v", id, info.SupportConfigurationUpdate, want)
+				}
+				if cloned := cloneModelInfo(info); cloned.SupportConfigurationUpdate != want {
+					t.Errorf("%s clone configuration_update = %v, want %v", id, cloned.SupportConfigurationUpdate, want)
+				}
+				raw, errMarshal := json.Marshal(info)
+				if errMarshal != nil {
+					t.Fatal(errMarshal)
+				}
+				if strings.Contains(string(raw), "support_configuration_update") || strings.Contains(string(raw), "SupportConfigurationUpdate") {
+					t.Errorf("%s exposed configuration_update capability: %s", id, raw)
+				}
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "true", raw: `{"id":"test","support_configuration_update":true}`, want: true},
+		{name: "false", raw: `{"id":"test","support_configuration_update":false}`},
+		{name: "absent", raw: `{"id":"test"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			info := ModelInfo{SupportConfigurationUpdate: true}
+			if errUnmarshal := json.Unmarshal([]byte(tt.raw), &info); errUnmarshal != nil {
+				t.Fatal(errUnmarshal)
+			}
+			if info.SupportConfigurationUpdate != tt.want {
+				t.Errorf("capability = %v, want %v", info.SupportConfigurationUpdate, tt.want)
+			}
+		})
+	}
+}
 
 func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
 	if len(models) == 0 {
 		t.Fatal("GetStaticModelDefinitionsByChannel(gemini-interactions) returned no models")
+	}
+}
+
+func TestGetStaticModelDefinitionsByChannelSupportsKimiAndKimiAI(t *testing.T) {
+	for _, channel := range []string{"kimi", "kimi-ai", "kimi.ai", "kimi.com"} {
+		models := GetStaticModelDefinitionsByChannel(channel)
+		if len(models) == 0 {
+			t.Fatalf("GetStaticModelDefinitionsByChannel(%s) returned no models", channel)
+		}
 	}
 }
 
@@ -109,6 +185,41 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 	}
 	if got := AntigravityWebSearchModelFor("unknown-model"); got != "" {
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
+	}
+}
+
+func TestValidateModelsCatalog_Meta(t *testing.T) {
+	valid := &staticModelsJSON{
+		Meta: []*ModelInfo{
+			{ID: "muse-spark-1.3"},
+		},
+	}
+	if err := validateModelsCatalog(valid); err != nil {
+		t.Fatalf("expected valid Meta catalog to pass, got: %v", err)
+	}
+
+	withNull := &staticModelsJSON{
+		Meta: []*ModelInfo{nil},
+	}
+	if err := validateModelsCatalog(withNull); err == nil {
+		t.Fatal("expected error for Meta section with null model, got nil")
+	}
+
+	withEmptyID := &staticModelsJSON{
+		Meta: []*ModelInfo{{ID: " "}},
+	}
+	if err := validateModelsCatalog(withEmptyID); err == nil {
+		t.Fatal("expected error for Meta section with empty model id, got nil")
+	}
+
+	withDuplicate := &staticModelsJSON{
+		Meta: []*ModelInfo{
+			{ID: "muse-spark-1.3"},
+			{ID: "muse-spark-1.3"},
+		},
+	}
+	if err := validateModelsCatalog(withDuplicate); err == nil {
+		t.Fatal("expected error for Meta section with duplicate model id, got nil")
 	}
 }
 

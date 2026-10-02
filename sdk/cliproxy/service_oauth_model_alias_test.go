@@ -3,8 +3,8 @@ package cliproxy
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestApplyOAuthModelAlias_Rename(t *testing.T) {
@@ -119,6 +119,38 @@ func TestApplyOAuthModelAlias_ForkAddsMultipleAliases(t *testing.T) {
 	}
 	if out[2].Name != "models/g5-2" {
 		t.Fatalf("expected forked model name %q, got %q", "models/g5-2", out[2].Name)
+	}
+}
+
+func TestApplyOAuthModelAlias_Meta(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"meta": {
+				{Name: "muse-spark-1.3", Alias: "muse-latest", DisplayName: "Muse Latest"},
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "muse-spark-1.3", Name: "models/muse-spark-1.3", DisplayName: "Muse Spark 1.3"},
+	}
+
+	out := applyOAuthModelAlias(cfg, "meta", "oauth", models)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(out))
+	}
+	if out[0].ID != "muse-latest" {
+		t.Fatalf("expected model id %q, got %q", "muse-latest", out[0].ID)
+	}
+	if out[0].Name != "models/muse-latest" {
+		t.Fatalf("expected model name %q, got %q", "models/muse-latest", out[0].Name)
+	}
+	if out[0].DisplayName != "Muse Latest" {
+		t.Fatalf("expected display name %q, got %q", "Muse Latest", out[0].DisplayName)
+	}
+
+	apiKeyOut := applyOAuthModelAlias(cfg, "meta", "apikey", models)
+	if len(apiKeyOut) != 1 || apiKeyOut[0].ID != "muse-spark-1.3" {
+		t.Fatalf("expected meta-api-key models to remain unchanged, got %#v", apiKeyOut)
 	}
 }
 
