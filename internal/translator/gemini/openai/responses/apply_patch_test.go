@@ -152,7 +152,9 @@ func TestGeminiApplyPatchWinningDeclarationAndNegativeCompatibility(t *testing.T
 				t.Fatalf("compatibility changed: %s", out)
 			}
 			var param any
-			for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(test.request), nil, raw, &param) {
+			streamEvents := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(test.request), nil, raw, &param)
+			streamEvents = append(streamEvents, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(test.request), nil, []byte("[DONE]"), &param)...)
+			for _, chunk := range streamEvents {
 				kind, ev := parseSSEEvent(t, chunk)
 				if kind == "response.custom_tool_call_input.delta" || kind == "response.failed" {
 					t.Fatalf("patch behavior applied to non-patch: %s", chunk)
@@ -195,7 +197,7 @@ func TestGeminiApplyPatchNonStreamConflictingCompleteCalls(t *testing.T) {
 
 func TestGeminiApplyPatchHistoryPreservesWhitespaceAndToolPair(t *testing.T) {
 	request := []byte(`{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"apply_patch"}]}],"input":[{"type":"custom_tool_call","call_id":"c1","namespace":"functions","name":"apply_patch","input":"  *** Begin Patch\n*** Add File: 中.txt\n+😀\n*** End Patch\n "},{"type":"custom_tool_call_output","call_id":"c1","output":"ok"},{"role":"user","type":"message","content":"continue"}]}`)
-	out := ConvertOpenAIResponsesRequestToGemini("gemini-3.1-pro-preview", request, false)
+	out, _ := ConvertOpenAIResponsesRequestToGemini("gemini-3.1-pro-preview", request, false)
 	want := "  *** Begin Patch\n*** Add File: 中.txt\n+😀\n*** End Patch\n "
 	var call, result gjson.Result
 	gjson.GetBytes(out, "contents").ForEach(func(_, content gjson.Result) bool {
@@ -238,7 +240,9 @@ func TestGeminiApplyPatchDistinctUnkeyedCompleteCalls(t *testing.T) {
 	raw := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"functions__apply_patch","args":{"input":"a"}}},{"functionCall":{"name":"functions__apply_patch","args":{"input":"b"}}}]},"finishReason":"STOP"}]}`)
 	inputs := map[string]string{}
 	var final gjson.Result
-	for _, chunk := range ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(geminiPatchRequest), nil, raw, &param) {
+	streamEvents := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(geminiPatchRequest), nil, raw, &param)
+	streamEvents = append(streamEvents, ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini", []byte(geminiPatchRequest), nil, []byte("[DONE]"), &param)...)
+	for _, chunk := range streamEvents {
 		kind, ev := parseSSEEvent(t, chunk)
 		switch kind {
 		case "response.custom_tool_call_input.delta":

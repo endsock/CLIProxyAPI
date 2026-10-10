@@ -226,7 +226,7 @@ func TestConvertAntigravityResponseToOpenAIResponsesNonStream_WebSearch(t *testi
 
 func TestAntigravityApplyPatchReuse(t *testing.T) {
 	request := []byte(`{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","definition":"start: patch"}}]}],"input":"patch"}`)
-	translated := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.1-pro-preview", request, false)
+	translated, _ := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.1-pro-preview", request, false)
 	declaration := gjson.GetBytes(translated, "request.tools.0.functionDeclarations.0")
 	if declaration.Get("name").String() != "functions__apply_patch" || !strings.Contains(declaration.Get("description").String(), "*** Begin Patch") || declaration.Get("parametersJsonSchema.properties.input.type").String() != "string" || !declaration.Get("parametersJsonSchema.additionalProperties").Exists() || declaration.Get("parametersJsonSchema.additionalProperties").Bool() {
 		t.Fatalf("missing declaration: %s", translated)
@@ -240,7 +240,9 @@ func TestAntigravityApplyPatchReuse(t *testing.T) {
 	var param any
 	var delta strings.Builder
 	var done, item, final string
-	for _, chunk := range ConvertAntigravityResponseToOpenAIResponses(context.Background(), "gemini", request, translated, raw, &param) {
+	chunks := ConvertAntigravityResponseToOpenAIResponses(context.Background(), "gemini", request, translated, raw, &param)
+	chunks = append(chunks, ConvertAntigravityResponseToOpenAIResponses(context.Background(), "gemini", request, translated, []byte("[DONE]"), &param)...)
+	for _, chunk := range chunks {
 		for _, line := range strings.Split(string(chunk), "\n") {
 			if !strings.HasPrefix(line, "data:") {
 				continue

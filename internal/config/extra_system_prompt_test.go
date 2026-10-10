@@ -26,8 +26,8 @@ func TestExtraSystemPromptLayoutCompatibility(t *testing.T) {
 			if cfg.Codex.ExtraSystemPrompt != tc.want || cfg.ForAPIKey().Codex.ExtraSystemPrompt != tc.want {
 				t.Fatalf("prompt lost or incorrectly scoped: %+v", cfg.Codex)
 			}
-			if cfg.ForAPIKey().Codex.ResponseSteering || !cfg.Codex.ResponseSteering {
-				t.Fatal("shared prompt changed OAuth-only steering scope")
+			if !cfg.ForAPIKey().Codex.ResponseSteering || !cfg.Codex.ResponseSteering {
+				t.Fatal("shared prompt changed shared upstream steering scope")
 			}
 			data, err := yaml.Marshal(cfg)
 			if err != nil {
