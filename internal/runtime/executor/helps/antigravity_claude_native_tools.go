@@ -17,12 +17,13 @@ type claudeNativeToolsKey struct{}
 
 type claudeNativeToolsState struct {
 	preferPowerShell  bool
+	piTools           bool
 	extraSystemPrompt string
 }
 
 // AnnotateClaudeNativeTools marks ctx so Antigravity Claude native-tool rewrite
 // and header override run later without changing executor signatures.
-func AnnotateClaudeNativeTools(ctx context.Context, from sdktranslator.Format, cfg *config.Config) context.Context {
+func AnnotateClaudeNativeTools(ctx context.Context, from sdktranslator.Format, cfg *config.Config, originAgents ...string) context.Context {
 	if ctx == nil || from != sdktranslator.FormatClaude {
 		return ctx
 	}
@@ -30,7 +31,8 @@ func AnnotateClaudeNativeTools(ctx context.Context, from sdktranslator.Format, c
 	if cfg != nil {
 		extra = strings.TrimSpace(cfg.Codex.ExtraSystemPrompt)
 	}
-	return context.WithValue(ctx, claudeNativeToolsKey{}, &claudeNativeToolsState{extraSystemPrompt: extra})
+	piTools := len(originAgents) > 0 && strings.Contains(originAgents[0], "pi (")
+	return context.WithValue(ctx, claudeNativeToolsKey{}, &claudeNativeToolsState{extraSystemPrompt: extra, piTools: piTools})
 }
 
 func claudeNativeToolsFromCtx(ctx context.Context) *claudeNativeToolsState {

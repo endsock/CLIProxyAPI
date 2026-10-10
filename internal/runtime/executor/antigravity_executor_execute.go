@@ -62,7 +62,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	ctx = helps.AnnotateClaudeNativeTools(ctx, from, e.cfg)
+	ctx = helps.AnnotateClaudeNativeTools(ctx, from, e.cfg, opts.Headers.Get("orgi-agent"))
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("antigravity")
 
@@ -276,7 +276,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	ctx = helps.AnnotateClaudeNativeTools(ctx, from, e.cfg)
+	ctx = helps.AnnotateClaudeNativeTools(ctx, from, e.cfg, opts.Headers.Get("orgi-agent"))
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("antigravity")
 

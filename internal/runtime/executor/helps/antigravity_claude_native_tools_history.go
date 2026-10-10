@@ -24,7 +24,7 @@ type nativeHistoryAlias struct {
 // Only recorded one-to-one mappings are eligible; names alone prove no identity.
 func RestoreClaudeNativeToolHistory(ctx context.Context, payload []byte, items [][]byte) ([]byte, error) {
 	state := claudeNativeToolsFromCtx(ctx)
-	if state == nil {
+	if state == nil || state.piTools {
 		return payload, nil
 	}
 	aliases := make(map[string]nativeHistoryAlias)

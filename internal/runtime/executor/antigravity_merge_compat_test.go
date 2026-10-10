@@ -18,9 +18,18 @@ import (
 )
 
 func TestAntigravityMergeCompatibilityHTTP(t *testing.T) {
-	for _, model := range []string{"gemini-3.8-flash-high", "claude-sonnet-4-6"} {
+	for _, testCase := range []struct{ model, agent string }{
+		{"gemini-3.8-flash-high", ""},
+		{"claude-sonnet-4-6", ""},
+		{"gemini-3.8-flash-high", "pi (test)"},
+		{"claude-sonnet-4-6", "pi (test)"},
+	} {
+		model, expectedName := testCase.model, "Bash"
+		if testCase.agent != "" {
+			expectedName = "bash"
+		}
 		for _, stream := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/stream=%t", model, stream), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/agent=%s/stream=%t", model, testCase.agent, stream), func(t *testing.T) {
 				bodies := make(chan []byte, 1)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					body, err := io.ReadAll(r.Body)
@@ -50,7 +59,7 @@ func TestAntigravityMergeCompatibilityHTTP(t *testing.T) {
 					"access_token": "test-token", "project_id": "test-project", "expired": time.Now().Add(time.Hour).Format(time.RFC3339),
 				}}
 				input := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":1024,"messages":[{"role":"user","content":"List /tmp/project"}],"tools":[{"name":"Bash","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}},{"name":"mcp__test__call","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}]}`, model))
-				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: stream}
+				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, Stream: stream, Headers: http.Header{"Orgi-Agent": []string{testCase.agent}}}
 				req := cliproxyexecutor.Request{Model: model, Payload: input}
 				var output []byte
 				if stream {
@@ -78,7 +87,7 @@ func TestAntigravityMergeCompatibilityHTTP(t *testing.T) {
 							arguments.WriteString(event.Get("delta.partial_json").String())
 						}
 					}
-					if name != "Bash" || gjson.Get(arguments.String(), "command").String() != "ls -la -- '/tmp/project'" {
+					if name != expectedName || gjson.Get(arguments.String(), "command").String() != "ls -la -- '/tmp/project'" {
 						t.Fatalf("stream lost mapped tool: %s", output)
 					}
 					if !strings.Contains(string(output), `"type":"message_stop"`) {
@@ -91,7 +100,7 @@ func TestAntigravityMergeCompatibilityHTTP(t *testing.T) {
 					}
 					output = result.Payload
 					tool := gjson.GetBytes(output, "content.0")
-					if tool.Get("name").String() != "Bash" || tool.Get("input.command").String() != "ls -la -- '/tmp/project'" {
+					if tool.Get("name").String() != expectedName || tool.Get("input.command").String() != "ls -la -- '/tmp/project'" {
 						t.Fatalf("nonstream lost mapped tool: %s", output)
 					}
 				}

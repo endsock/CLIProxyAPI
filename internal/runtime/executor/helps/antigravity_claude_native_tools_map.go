@@ -72,7 +72,11 @@ func mapFunctionCall(fc gjson.Result, state *claudeNativeToolsState) [][]byte {
 	if name == "" || IsClaudeMCPToolName(name) {
 		return nil
 	}
-	mapper := agyClaudeFunctionMappers[name]
+	mappers := agyClaudeFunctionMappers
+	if state != nil && state.piTools {
+		mappers = agyPiFunctionMappers
+	}
+	mapper := mappers[name]
 	if mapper == nil {
 		return nil
 	}
