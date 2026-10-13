@@ -46,8 +46,8 @@ func claudeNativeToolsFromCtx(ctx context.Context) *claudeNativeToolsState {
 // RewriteRequestTools replaces request.tools with the Antigravity native catalog
 // plus translator-produced mcp__* declarations, overwrites
 // request.systemInstruction with the captured Antigravity prompt, then appends
-// codex.extra-system-prompt as an extra parts item when set. History contents
-// are not touched.
+// codex.extra-system-prompt as an extra parts item when set. The incoming system
+// text is prepended as a user message without changing existing history.
 func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 	state := claudeNativeToolsFromCtx(ctx)
 	if state == nil || len(payload) == 0 {
@@ -68,6 +68,28 @@ func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 	updated, errSet := sjson.SetRawBytes(payload, "request.tools", replaced)
 	if errSet != nil {
 		return payload
+	}
+	systemParts := make([][]byte, 0)
+	gjson.GetBytes(payload, "request.systemInstruction.parts").ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text"); text.Type == gjson.String && text.String() != "" {
+			systemParts = append(systemParts, []byte(part.Raw))
+		}
+		return true
+	})
+	if len(systemParts) > 0 {
+		message, errSet := sjson.SetRawBytes([]byte(`{"role":"user"}`), "parts", JoinRawJSONArray(systemParts))
+		if errSet != nil {
+			return payload
+		}
+		contents := [][]byte{message}
+		gjson.GetBytes(payload, "request.contents").ForEach(func(_, content gjson.Result) bool {
+			contents = append(contents, []byte(content.Raw))
+			return true
+		})
+		updated, errSet = sjson.SetRawBytes(updated, "request.contents", JoinRawJSONArray(contents))
+		if errSet != nil {
+			return payload
+		}
 	}
 	updated, errSet = sjson.SetRawBytes(updated, "request.systemInstruction", agyNativeSystemInstructionObject)
 	if errSet != nil {
