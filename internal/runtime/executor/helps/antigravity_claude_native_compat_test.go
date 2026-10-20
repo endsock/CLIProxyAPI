@@ -61,6 +61,18 @@ func TestNativeToolCompatibilityPrependsSystemAsUser(t *testing.T) {
 	}
 }
 
+func TestNativeToolCompatibilityPreservesIndependentWebSearch(t *testing.T) {
+	payload := []byte(`{"requestType":"web_search","request":{"systemInstruction":{"role":"user","parts":[{"text":"search instruction"}]},"tools":[{"googleSearch":{"enhancedContent":{"imageSearch":{"maxResultCount":5}}}}],"contents":[{"role":"user","parts":[{"text":"北京天气"}]}]}}`)
+	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
+	out := RewriteRequestTools(ctx, payload)
+	if !bytes.Equal(out, payload) {
+		t.Fatalf("native web-search request was rewritten: %s", out)
+	}
+	if !gjson.GetBytes(out, "request.tools.0.googleSearch").Exists() {
+		t.Fatal("googleSearch tool was removed from native web-search request")
+	}
+}
+
 func TestNativeToolCompatibilityKeepsHistoryAndMCP(t *testing.T) {
 	payload := []byte(`{"request":{"tools":[{"functionDeclarations":[{"name":"PowerShell"},{"name":"mcp__test__call","parameters":{"type":"OBJECT"}}]}],"contents":[{"role":"model","parts":[{"functionCall":{"name":"Read","args":{"file_path":"/tmp/a"}}}]}]}}`)
 	cfg := &config.Config{Codex: config.CodexConfig{ExtraSystemPrompt: "extra"}}

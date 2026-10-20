@@ -53,6 +53,12 @@ func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 	if state == nil || len(payload) == 0 {
 		return payload
 	}
+	// Dedicated native web-search requests must keep googleSearch and the
+	// search-specific system instruction intact. Replacing them with the
+	// Claude native tool catalog turns the request back into a function call.
+	if gjson.GetBytes(payload, "requestType").String() == "web_search" {
+		return payload
+	}
 	tools := gjson.GetBytes(payload, "request.tools")
 	state.preferPowerShell = requestPrefersPowerShell(tools)
 	mcpDecls := extractClaudeMCPDeclarations(tools)
