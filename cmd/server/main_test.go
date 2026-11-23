@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"path/filepath"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -218,5 +220,21 @@ func TestResolveManagementBaseURL(t *testing.T) {
 				t.Fatalf("resolveManagementBaseURL(%q, %v) = %q, want %q", tt.flagURL, tt.cfg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadPluginBootstrapConfigDoesNotRewriteFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte("port: 8317\nmanagement:\n  secret-key: bootstrap-secret\n")
+	if errCreate := config.CreateConfigFile(path, raw); errCreate != nil {
+		t.Fatal(errCreate)
+	}
+	cfg := loadPluginBootstrapConfig(path)
+	if cfg.Port != 8317 || cfg.ServerID != "" {
+		t.Fatalf("plugin config port = %d, server ID = %q", cfg.Port, cfg.ServerID)
+	}
+	got, errRead := config.ReadConfigFile(path)
+	if errRead != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("plugin bootstrap changed the config: %q, %v", got, errRead)
 	}
 }

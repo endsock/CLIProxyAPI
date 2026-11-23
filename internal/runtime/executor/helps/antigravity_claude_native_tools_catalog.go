@@ -3,7 +3,7 @@ package helps
 import (
 	_ "embed"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 //go:embed antigravity_claude_native_tools_catalog.json

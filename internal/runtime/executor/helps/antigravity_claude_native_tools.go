@@ -5,10 +5,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const antigravityClaudeNativeUserAgent = "antigravity/cli/1.1.22 (aidev_client; os_type=windows; arch=amd64; cl=971564011; auth_method=consumer)"
@@ -49,17 +48,27 @@ func claudeNativeToolsFromCtx(ctx context.Context) *claudeNativeToolsState {
 // codex.extra-system-prompt as an extra parts item when set. The incoming system
 // text is prepended as a user message without changing existing history.
 func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
+	if claudeNativeToolsFromCtx(ctx) == nil || len(payload) == 0 {
+		return payload
+	}
+	doc := ojson.NewDoc(payload)
+	if !RewriteRequestToolsDoc(ctx, doc) {
+		return payload
+	}
+	return doc.Bytes()
+}
+
+// RewriteRequestToolsDoc applies native-tool compatibility before payload finalization.
+func RewriteRequestToolsDoc(ctx context.Context, doc *ojson.Doc) bool {
 	state := claudeNativeToolsFromCtx(ctx)
-	if state == nil || len(payload) == 0 {
-		return payload
+	if state == nil || doc == nil {
+		return false
 	}
-	// Dedicated native web-search requests must keep googleSearch and the
-	// search-specific system instruction intact. Replacing them with the
-	// Claude native tool catalog turns the request back into a function call.
-	if gjson.GetBytes(payload, "requestType").String() == "web_search" {
-		return payload
+	// Dedicated web-search requests keep their tools and search instruction.
+	if doc.Get("requestType").String() == "web_search" {
+		return false
 	}
-	tools := gjson.GetBytes(payload, "request.tools")
+	tools := doc.Get("request.tools")
 	state.preferPowerShell = requestPrefersPowerShell(tools)
 	mcpDecls := extractClaudeMCPDeclarations(tools)
 	replaced := agyNativeToolsCatalogArray
@@ -71,52 +80,31 @@ func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 		}
 		replaced = JoinRawJSONArray(items)
 	}
-	updated, errSet := sjson.SetRawBytes(payload, "request.tools", replaced)
-	if errSet != nil {
-		return payload
-	}
 	systemParts := make([][]byte, 0)
-	gjson.GetBytes(payload, "request.systemInstruction.parts").ForEach(func(_, part gjson.Result) bool {
-		if text := part.Get("text"); text.Type == gjson.String && text.String() != "" {
+	doc.Get("request.systemInstruction.parts").ForEach(func(_, part ojson.Result) bool {
+		if text := part.Get("text"); text.Type == ojson.String && text.String() != "" {
 			systemParts = append(systemParts, []byte(part.Raw))
 		}
 		return true
 	})
 	if len(systemParts) > 0 {
-		message, errSet := sjson.SetRawBytes([]byte(`{"role":"user"}`), "parts", JoinRawJSONArray(systemParts))
-		if errSet != nil {
-			return payload
-		}
-		contents := [][]byte{message}
-		gjson.GetBytes(payload, "request.contents").ForEach(func(_, content gjson.Result) bool {
+		messageDoc := ojson.NewDocString(`{"role":"user"}`)
+		_ = messageDoc.SetRawBytes("parts", JoinRawJSONArray(systemParts))
+		contents := [][]byte{messageDoc.Bytes()}
+		doc.Get("request.contents").ForEach(func(_, content ojson.Result) bool {
 			contents = append(contents, []byte(content.Raw))
 			return true
 		})
-		updated, errSet = sjson.SetRawBytes(updated, "request.contents", JoinRawJSONArray(contents))
-		if errSet != nil {
-			return payload
-		}
+		_ = doc.SetRawBytes("request.contents", JoinRawJSONArray(contents))
 	}
-	updated, errSet = sjson.SetRawBytes(updated, "request.systemInstruction", agyNativeSystemInstructionObject)
-	if errSet != nil {
-		return payload
+	_ = doc.SetRawBytes("request.tools", replaced)
+	_ = doc.SetRawBytes("request.systemInstruction", agyNativeSystemInstructionObject)
+	if state.extraSystemPrompt != "" {
+		partDoc := ojson.NewDocString(`{}`)
+		_ = partDoc.Set("text", state.extraSystemPrompt)
+		_ = doc.SetRawBytes("request.systemInstruction.parts.-1", partDoc.Bytes())
 	}
-	return appendExtraSystemPromptPart(updated, state.extraSystemPrompt)
-}
-
-func appendExtraSystemPromptPart(payload []byte, extra string) []byte {
-	if extra == "" {
-		return payload
-	}
-	part, errSet := sjson.SetBytes([]byte(`{}`), "text", extra)
-	if errSet != nil {
-		return payload
-	}
-	updated, errSet := sjson.SetRawBytes(payload, "request.systemInstruction.parts.-1", part)
-	if errSet != nil {
-		return payload
-	}
-	return updated
+	return true
 }
 
 // MapResponseFunctionCalls rewrites complete upstream functionCall objects to
@@ -130,15 +118,15 @@ func MapResponseFunctionCalls(ctx context.Context, body []byte) []byte {
 	if path == "" {
 		return body
 	}
-	rewritten, ok := mapResponseParts(gjson.GetBytes(body, path), state)
+	rewritten, ok := mapResponseParts(ojson.GetBytesNoCopy(body, path), state)
 	if !ok {
 		return body
 	}
-	updated, errSet := sjson.SetRawBytes(body, path, rewritten)
-	if errSet != nil {
+	doc := ojson.NewDoc(body)
+	if errSet := doc.SetRawBytes(path, rewritten); errSet != nil {
 		return body
 	}
-	return updated
+	return doc.Bytes()
 }
 
 // ApplyRequestHeaders overrides the upstream User-Agent on the Claude native-tool path.
@@ -149,10 +137,10 @@ func ApplyRequestHeaders(ctx context.Context, req *http.Request) {
 	req.Header.Set("User-Agent", antigravityClaudeNativeUserAgent)
 }
 
-func requestPrefersPowerShell(tools gjson.Result) bool {
+func requestPrefersPowerShell(tools ojson.Result) bool {
 	hasPowerShell, hasBash := false, false
-	tools.ForEach(func(_, tool gjson.Result) bool {
-		tool.Get("functionDeclarations").ForEach(func(_, decl gjson.Result) bool {
+	tools.ForEach(func(_, tool ojson.Result) bool {
+		tool.Get("functionDeclarations").ForEach(func(_, decl ojson.Result) bool {
 			switch decl.Get("name").String() {
 			case "PowerShell":
 				hasPowerShell = true
@@ -166,10 +154,10 @@ func requestPrefersPowerShell(tools gjson.Result) bool {
 	return hasPowerShell && !hasBash
 }
 
-func extractClaudeMCPDeclarations(tools gjson.Result) [][]byte {
+func extractClaudeMCPDeclarations(tools ojson.Result) [][]byte {
 	var decls [][]byte
-	tools.ForEach(func(_, tool gjson.Result) bool {
-		tool.Get("functionDeclarations").ForEach(func(_, decl gjson.Result) bool {
+	tools.ForEach(func(_, tool ojson.Result) bool {
+		tool.Get("functionDeclarations").ForEach(func(_, decl ojson.Result) bool {
 			if IsClaudeMCPToolName(decl.Get("name").String()) {
 				decls = append(decls, []byte(decl.Raw))
 			}
@@ -188,10 +176,10 @@ func wrapFunctionDeclaration(decl []byte) []byte {
 }
 
 func functionCallPartsPath(body []byte) string {
-	if gjson.GetBytes(body, "response.candidates.0.content.parts").Exists() {
+	if ojson.GetBytesNoCopy(body, "response.candidates.0.content.parts").Exists() {
 		return "response.candidates.0.content.parts"
 	}
-	if gjson.GetBytes(body, "candidates.0.content.parts").Exists() {
+	if ojson.GetBytesNoCopy(body, "candidates.0.content.parts").Exists() {
 		return "candidates.0.content.parts"
 	}
 	return ""

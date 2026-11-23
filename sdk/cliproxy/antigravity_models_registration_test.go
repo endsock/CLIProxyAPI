@@ -2,7 +2,6 @@ package cliproxy
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,12 +13,26 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
+
+// waitForAntigravityClientModel polls until the registry publishes modelID
+// for clientID, bounded so a missing publication fails instead of hanging.
+func waitForAntigravityClientModel(t *testing.T, clientID, modelID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !GlobalModelRegistry().ClientSupportsModel(clientID, modelID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("client %s model %s was not published within 2s", clientID, modelID)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 func TestAntigravityDynamicRegistrationLifecycle(t *testing.T) {
 	resetAntigravityCapabilityCache()
@@ -216,6 +229,13 @@ func TestAntigravityRestartSeedsPersistedHintsBeforeProbeAndAcrossProbeFailure(t
 	resetAntigravityCapabilityCache()
 	t.Cleanup(resetAntigravityCapabilityCache)
 
+	baseTime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var nowUnix atomic.Int64
+	nowUnix.Store(baseTime.UnixNano())
+	prevNow := antigravityNowFunc
+	antigravityNowFunc = func() time.Time { return time.Unix(0, nowUnix.Load()).UTC() }
+	t.Cleanup(func() { antigravityNowFunc = prevNow })
+
 	var status atomic.Int32
 	status.Store(http.StatusOK)
 	var blockProbe atomic.Bool
@@ -273,8 +293,9 @@ func TestAntigravityRestartSeedsPersistedHintsBeforeProbeAndAcrossProbeFailure(t
 		t.Fatal("initial probe did not register gemini-3-flash")
 	}
 
-	// Simulate process restart: clear in-memory registry and capability caches,
-	// then reload the auth file from disk.
+	// Simulate process restart after the persisted hints TTL has elapsed: clear in-memory
+	// registry and capability caches, then reload the auth file from disk.
+	nowUnix.Store(baseTime.Add(antigravityCapabilityCacheTTL + time.Minute).UnixNano())
 	GlobalModelRegistry().UnregisterClient(auth.ID)
 	resetAntigravityCapabilityCache()
 	blockProbe.Store(true)
@@ -328,6 +349,444 @@ func TestAntigravityRestartSeedsPersistedHintsBeforeProbeAndAcrossProbeFailure(t
 	changedEndpointAuth.Metadata["base_url"] = "https://different-endpoint.invalid"
 	if hints := restartedSvc.cachedAntigravityHints(changedEndpointAuth); hints.ModelIDs != nil {
 		t.Fatalf("expected endpoint change to ignore persisted hints, got %v", hints)
+	}
+}
+
+func TestAntigravityRestartReusesFreshPersistedHintsWithoutImmediateProbe(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
+
+	baseTime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var nowUnix atomic.Int64
+	nowUnix.Store(baseTime.UnixNano())
+	prevNow := antigravityNowFunc
+	antigravityNowFunc = func() time.Time { return time.Unix(0, nowUnix.Load()).UTC() }
+	t.Cleanup(func() { antigravityNowFunc = prevNow })
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{},"gemini-3.1-flash-lite":{}},"webSearchModelIds":["gemini-3-flash"]}`))
+	}))
+	defer server.Close()
+
+	authDir := t.TempDir()
+	store := sdkAuth.NewFileTokenStore()
+	store.SetBaseDir(authDir)
+
+	manager := coreauth.NewManager(store, nil, nil)
+	svc := &Service{cfg: &config.Config{AuthDir: authDir}, coreManager: manager}
+	auth := &coreauth.Auth{
+		ID:       "antigravity-fresh-restart.json",
+		FileName: "antigravity-fresh-restart.json",
+		Provider: "antigravity",
+		Attributes: map[string]string{
+			coreauth.AttributePath:          filepath.Join(authDir, "antigravity-fresh-restart.json"),
+			coreauth.AttributeSource:        filepath.Join(authDir, "antigravity-fresh-restart.json"),
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "token-fresh-restart",
+			"project_id":   "project-fresh-restart",
+			"base_url":     server.URL,
+		},
+	}
+	auth, errRegister := manager.Register(t.Context(), auth)
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+
+	// Initial startup probes once and persists capability hints with freshness metadata.
+	svc.registerModelsForAuth(t.Context(), auth)
+	svc.WaitAntigravityProbes()
+	if calls.Load() != 1 {
+		t.Fatalf("initial probe calls = %d, want 1", calls.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(auth.ID, "gemini-3-flash") {
+		t.Fatal("initial probe did not register gemini-3-flash")
+	}
+
+	// Simulate process restart 5 minutes later (well within antigravityCapabilityCacheTTL).
+	nowUnix.Store(baseTime.Add(5 * time.Minute).UnixNano())
+	GlobalModelRegistry().UnregisterClient(auth.ID)
+	resetAntigravityCapabilityCache()
+
+	restartedManager := coreauth.NewManager(store, nil, nil)
+	if errLoad := restartedManager.Load(t.Context()); errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	loadedAuth, ok := restartedManager.GetByID(auth.ID)
+	if !ok || loadedAuth == nil {
+		t.Fatal("restarted manager did not load auth from disk")
+	}
+	restartedSvc := &Service{cfg: &config.Config{AuthDir: authDir}, coreManager: restartedManager}
+
+	restartedSvc.registerModelsForAuth(t.Context(), loadedAuth)
+	restartedSvc.WaitAntigravityProbes()
+
+	if !GlobalModelRegistry().ClientSupportsModel(loadedAuth.ID, "gemini-3-flash") {
+		t.Fatal("restarted service did not register persisted models")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("fresh persisted hints triggered immediate restart probe: calls = %d, want 1", calls.Load())
+	}
+
+	key := restartedSvc.antigravityCapabilityKey(loadedAuth)
+	antigravityCapabilityMu.RLock()
+	entry := antigravityCapabilityCache[key]
+	antigravityCapabilityMu.RUnlock()
+	wantExpiry := baseTime.Add(antigravityCapabilityCacheTTL)
+	if !entry.expiresAt.Equal(wantExpiry) {
+		t.Fatalf("seeded entry.expiresAt = %v, want %v", entry.expiresAt, wantExpiry)
+	}
+
+	// Periodic refresh before expiry must still skip probing.
+	restartedSvc.refreshAntigravityModels(t.Context())
+	restartedSvc.WaitAntigravityProbes()
+	if calls.Load() != 1 {
+		t.Fatalf("refresh before expiry triggered probe: calls = %d, want 1", calls.Load())
+	}
+
+	// Advancing past TTL triggers the scheduled refresh probe.
+	nowUnix.Store(wantExpiry.Add(time.Second).UnixNano())
+	restartedSvc.refreshAntigravityModels(t.Context())
+	restartedSvc.WaitAntigravityProbes()
+	if calls.Load() != 2 {
+		t.Fatalf("refresh after expiry did not probe: calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestAntigravityRegistrationEpochAdvanceReusesFreshPersistedHints(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
+
+	baseTime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var nowUnix atomic.Int64
+	nowUnix.Store(baseTime.UnixNano())
+	prevNow := antigravityNowFunc
+	antigravityNowFunc = func() time.Time { return time.Unix(0, nowUnix.Load()).UTC() }
+	t.Cleanup(func() { antigravityNowFunc = prevNow })
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{}}}`))
+	}))
+	defer server.Close()
+
+	authDir := t.TempDir()
+	store := sdkAuth.NewFileTokenStore()
+	store.SetBaseDir(authDir)
+
+	manager := coreauth.NewManager(store, nil, nil)
+	svc := &Service{cfg: &config.Config{AuthDir: authDir}, coreManager: manager}
+	auth := &coreauth.Auth{
+		ID:       "antigravity-epoch-advance.json",
+		FileName: "antigravity-epoch-advance.json",
+		Provider: "antigravity",
+		Attributes: map[string]string{
+			coreauth.AttributePath:          filepath.Join(authDir, "antigravity-epoch-advance.json"),
+			coreauth.AttributeSource:        filepath.Join(authDir, "antigravity-epoch-advance.json"),
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "token-epoch",
+			"project_id":   "project-epoch",
+			"base_url":     server.URL,
+		},
+	}
+	auth, errRegister := manager.Register(t.Context(), auth)
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+
+	svc.registerModelsForAuth(t.Context(), auth)
+	svc.WaitAntigravityProbes()
+	if calls.Load() != 1 {
+		t.Fatalf("initial probe calls = %d, want 1", calls.Load())
+	}
+	initialEpoch := auth.RegistrationEpoch
+
+	// Manager.Load advances RegistrationEpoch across retained auths, invalidating the old cache key.
+	nowUnix.Store(baseTime.Add(10 * time.Minute).UnixNano())
+	if errLoad := manager.Load(t.Context()); errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	reloaded, ok := manager.GetByID(auth.ID)
+	if !ok || reloaded == nil {
+		t.Fatal("reloaded auth missing after Manager.Load")
+	}
+	if reloaded.RegistrationEpoch <= initialEpoch {
+		t.Fatalf("RegistrationEpoch = %d, want > %d", reloaded.RegistrationEpoch, initialEpoch)
+	}
+
+	svc.registerModelsForAuth(t.Context(), reloaded)
+	svc.WaitAntigravityProbes()
+	if calls.Load() != 1 {
+		t.Fatalf("RegistrationEpoch advance triggered probe burst: calls = %d, want 1", calls.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(reloaded.ID, "gemini-3-flash") {
+		t.Fatal("reloaded auth missing gemini-3-flash")
+	}
+}
+
+func TestAntigravitySeededPersistedHintsClampsExpiryAndHandlesLegacyMetadata(t *testing.T) {
+	baseTime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	currentRouteFP := sdkAuth.AntigravityCapabilityRouteFingerprint("", antigravityModelUserAgent())
+
+	cases := []struct {
+		name      string
+		persisted map[string]any
+		wantExp   time.Time
+		wantCalls int32
+	}{
+		{
+			name: "far future expires_at is clamped to antigravityCapabilityCacheTTL",
+			persisted: map[string]any{
+				"project_id":        "project-clamp",
+				"endpoint":          "https://clamp.invalid",
+				"model_ids":         []any{"gemini-3-flash"},
+				"route_fingerprint": currentRouteFP,
+				"expires_at":        baseTime.Add(48 * time.Hour).Format(time.RFC3339),
+			},
+			wantExp:   baseTime.Add(antigravityCapabilityCacheTTL),
+			wantCalls: 0,
+		},
+		{
+			name: "expires_at beyond updated_at plus TTL is capped by updated_at plus TTL",
+			persisted: map[string]any{
+				"project_id":        "project-clamp",
+				"endpoint":          "https://clamp.invalid",
+				"model_ids":         []any{"gemini-3-flash"},
+				"route_fingerprint": currentRouteFP,
+				"updated_at":        baseTime.Add(-2 * time.Hour).Format(time.RFC3339),
+				"expires_at":        baseTime.Add(10 * time.Hour).Format(time.RFC3339),
+			},
+			wantExp:   baseTime.Add(-2 * time.Hour).Add(antigravityCapabilityCacheTTL),
+			wantCalls: 0,
+		},
+		{
+			name: "updated_at without expires_at derives expiry from TTL",
+			persisted: map[string]any{
+				"project_id":        "project-clamp",
+				"endpoint":          "https://clamp.invalid",
+				"model_ids":         []any{"gemini-3-flash"},
+				"route_fingerprint": currentRouteFP,
+				"updated_at":        baseTime.Add(-30 * time.Minute).Format(time.RFC3339),
+			},
+			wantExp:   baseTime.Add(-30 * time.Minute).Add(antigravityCapabilityCacheTTL),
+			wantCalls: 0,
+		},
+		{
+			name: "legacy persisted metadata without timestamps seeds stale fallback and probes once",
+			persisted: map[string]any{
+				"project_id": "project-clamp",
+				"endpoint":   "https://clamp.invalid",
+				"model_ids":  []any{"gemini-3-flash"},
+			},
+			wantExp:   time.Time{},
+			wantCalls: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAntigravityCapabilityCache()
+			t.Cleanup(resetAntigravityCapabilityCache)
+
+			prevNow := antigravityNowFunc
+			antigravityNowFunc = func() time.Time { return baseTime }
+			t.Cleanup(func() { antigravityNowFunc = prevNow })
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{}}}`))
+			}))
+			defer server.Close()
+
+			tc.persisted["endpoint"] = server.URL
+			svc := &Service{cfg: &config.Config{}}
+			auth := &coreauth.Auth{
+				ID:       "antigravity-clamp.json",
+				Provider: "antigravity",
+				Metadata: map[string]any{
+					"access_token":                   "token-clamp",
+					"project_id":                     "project-clamp",
+					"base_url":                       server.URL,
+					antigravityPersistedHintsMetaKey: tc.persisted,
+				},
+			}
+
+			seededHints := svc.cachedAntigravityHints(auth)
+			if _, ok := seededHints.ModelIDs["gemini-3-flash"]; !ok {
+				t.Fatalf("seeded hints missing gemini-3-flash: %+v", seededHints)
+			}
+			key := svc.antigravityCapabilityKey(auth)
+			antigravityCapabilityMu.RLock()
+			entry := antigravityCapabilityCache[key]
+			antigravityCapabilityMu.RUnlock()
+			if !entry.expiresAt.Equal(tc.wantExp) {
+				t.Fatalf("seeded entry.expiresAt = %v, want %v", entry.expiresAt, tc.wantExp)
+			}
+
+			svc.fetchAntigravityModelCapabilityHintsForAuth(t.Context(), auth)
+			if calls.Load() != tc.wantCalls {
+				t.Fatalf("fetch calls = %d, want %d", calls.Load(), tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestAntigravityProxyChangeReprobesAndKeepsPersistedFallback(t *testing.T) {
+	resetAntigravityCapabilityCache()
+	t.Cleanup(resetAntigravityCapabilityCache)
+
+	baseTime := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var nowUnix atomic.Int64
+	nowUnix.Store(baseTime.UnixNano())
+	prevNow := antigravityNowFunc
+	antigravityNowFunc = func() time.Time { return time.Unix(0, nowUnix.Load()).UTC() }
+	t.Cleanup(func() { antigravityNowFunc = prevNow })
+
+	var callsA, callsB atomic.Int32
+	var statusB atomic.Int32
+	statusB.Store(http.StatusServiceUnavailable)
+
+	proxyA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsA.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{}}}`))
+	}))
+	defer proxyA.Close()
+
+	proxyB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsB.Add(1)
+		status := int(statusB.Load())
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = w.Write([]byte(`{"models":{"gemini-3.1-flash-lite":{}}}`))
+		}
+	}))
+	defer proxyB.Close()
+
+	authDir := t.TempDir()
+	store := sdkAuth.NewFileTokenStore()
+	store.SetBaseDir(authDir)
+
+	manager := coreauth.NewManager(store, nil, nil)
+	svc := &Service{cfg: &config.Config{AuthDir: authDir}, coreManager: manager}
+	auth := &coreauth.Auth{
+		ID:       "antigravity-proxy-switch.json",
+		FileName: "antigravity-proxy-switch.json",
+		Provider: "antigravity",
+		ProxyURL: proxyA.URL,
+		Attributes: map[string]string{
+			coreauth.AttributePath:          filepath.Join(authDir, "antigravity-proxy-switch.json"),
+			coreauth.AttributeSource:        filepath.Join(authDir, "antigravity-proxy-switch.json"),
+			coreauth.AttributeSourceBackend: coreauth.AuthSourceFile,
+		},
+		Metadata: map[string]any{
+			"type":         "antigravity",
+			"access_token": "token-proxy-switch",
+			"project_id":   "project-proxy-switch",
+			"base_url":     "http://upstream.invalid",
+		},
+	}
+	auth, errRegister := manager.Register(t.Context(), auth)
+	if errRegister != nil {
+		t.Fatal(errRegister)
+	}
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+
+	// Initial probe through proxy A succeeds and persists hints.
+	svc.registerModelsForAuth(t.Context(), auth)
+	svc.WaitAntigravityProbes()
+	if callsA.Load() != 1 || callsB.Load() != 0 {
+		t.Fatalf("initial probe counts: proxyA=%d proxyB=%d, want 1 and 0", callsA.Load(), callsB.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(auth.ID, "gemini-3-flash") {
+		t.Fatal("initial probe via proxy A did not register gemini-3-flash")
+	}
+
+	// Switching proxy to proxy B within TTL must NOT treat proxy A's persisted hints as fresh.
+	// When proxy B fails transiently, proxy A's persisted catalog remains available as stale fallback.
+	nowUnix.Store(baseTime.Add(5 * time.Minute).UnixNano())
+	updatedAuth, ok := manager.GetByID(auth.ID)
+	if !ok || updatedAuth == nil {
+		t.Fatal("auth missing before proxy switch")
+	}
+	updatedAuth = updatedAuth.Clone()
+	updatedAuth.ProxyURL = proxyB.URL
+	updatedAuth, errUpdate := manager.Update(t.Context(), updatedAuth)
+	if errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+
+	svc.registerModelsForAuth(t.Context(), updatedAuth)
+	svc.WaitAntigravityProbes()
+	if callsB.Load() != 1 {
+		t.Fatalf("proxy switch to proxy B did not probe new route: proxyA=%d proxyB=%d", callsA.Load(), callsB.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(updatedAuth.ID, "gemini-3-flash") {
+		t.Fatal("failed proxy B probe discarded stale persisted fallback")
+	}
+	keyB := svc.antigravityCapabilityKey(updatedAuth)
+	antigravityCapabilityMu.RLock()
+	entryB := antigravityCapabilityCache[keyB]
+	antigravityCapabilityMu.RUnlock()
+	if !entryB.expiresAt.IsZero() {
+		t.Fatalf("proxy A persisted hints marked fresh for proxy B: expiresAt=%v", entryB.expiresAt)
+	}
+
+	// Once proxy B recovers and backoff elapses, the new route's catalog replaces the fallback.
+	statusB.Store(http.StatusOK)
+	nowUnix.Store(baseTime.Add(10 * time.Minute).UnixNano())
+	svc.refreshAntigravityModels(t.Context())
+	svc.WaitAntigravityProbes()
+	if callsB.Load() != 2 {
+		t.Fatalf("proxy B recovery probe count = %d, want 2", callsB.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(updatedAuth.ID, "gemini-3.1-flash-lite") {
+		t.Fatal("proxy B catalog did not register gemini-3.1-flash-lite")
+	}
+	if GlobalModelRegistry().ClientSupportsModel(updatedAuth.ID, "gemini-3-flash") {
+		t.Fatal("stale proxy A model remained registered after proxy B probe succeeded")
+	}
+
+	// Restarting with proxy B still configured reuses proxy B's fresh persisted hints with 0 probes.
+	nowUnix.Store(baseTime.Add(15 * time.Minute).UnixNano())
+	GlobalModelRegistry().UnregisterClient(updatedAuth.ID)
+	resetAntigravityCapabilityCache()
+	restartedManager := coreauth.NewManager(store, nil, nil)
+	if errLoad := restartedManager.Load(t.Context()); errLoad != nil {
+		t.Fatal(errLoad)
+	}
+	reloaded, ok := restartedManager.GetByID(auth.ID)
+	if !ok || reloaded == nil {
+		t.Fatal("reloaded auth missing after restart")
+	}
+	reloaded = reloaded.Clone()
+	reloaded.ProxyURL = proxyB.URL
+	reloaded, errUpdate = restartedManager.Update(t.Context(), reloaded)
+	if errUpdate != nil {
+		t.Fatal(errUpdate)
+	}
+	restartedSvc := &Service{cfg: &config.Config{AuthDir: authDir}, coreManager: restartedManager}
+	restartedSvc.registerModelsForAuth(t.Context(), reloaded)
+	restartedSvc.WaitAntigravityProbes()
+	if callsB.Load() != 2 {
+		t.Fatalf("restart on unchanged proxy B triggered probe: proxyB=%d, want 2", callsB.Load())
+	}
+	if !GlobalModelRegistry().ClientSupportsModel(reloaded.ID, "gemini-3.1-flash-lite") {
+		t.Fatal("restarted service on proxy B missing persisted gemini-3.1-flash-lite")
 	}
 }
 
@@ -648,6 +1107,11 @@ func TestAntigravityBlockedHintPersistenceDoesNotBlockPublicationOrOtherAccounts
 		if r.Header.Get("Authorization") == "Bearer token-slow-b" {
 			_, _ = w.Write([]byte(`{"models":{"gemini-3-flash":{}}}`))
 			authBProbed <- struct{}{}
+			// Hold the response briefly after the server-side signal so the client
+			// deterministically receives and publishes it well after authBProbed
+			// fires; waiting only on that signal would race the probe result
+			// against later authB updates.
+			time.Sleep(200 * time.Millisecond)
 			return
 		}
 		model := authAModel.Load().(string)
@@ -751,6 +1215,11 @@ func TestAntigravityBlockedHintPersistenceDoesNotBlockPublicationOrOtherAccounts
 		svc.WaitAntigravityProbes()
 		t.Fatal("stalled persistence on authA blocked subsequent probe for authA")
 	}
+	// authBProbed only proves the handler wrote the response; the probe may not
+	// have parsed it or published the catalog yet. Wait for actual registry
+	// publication before any authB update below, otherwise that update changes
+	// authB's model settings and correctly discards the late probe result.
+	waitForAntigravityClientModel(t, authB.ID, "gemini-3-flash")
 	// Wait for authA's refreshed persistence to preempt authA's first Save and enter Save
 	// (which happens after applyAntigravityModelHints published authA's updated catalog).
 	select {

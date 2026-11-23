@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestAntigravityPiToolsMapping(t *testing.T) {

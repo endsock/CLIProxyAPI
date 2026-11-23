@@ -3,7 +3,7 @@ package helps
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 // Pi mappings are upstream-to-client only; unsupported native tools pass through.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 func TestMergeCompatibilityToolResultRefsAndErrors(t *testing.T) {
@@ -16,7 +16,10 @@ func TestMergeCompatibilityToolResultRefsAndErrors(t *testing.T) {
 	} {
 		for _, failed := range []bool{false, true} {
 			input := []byte(fmt.Sprintf(`{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"Read","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","is_error":%t,"content":%s}]}]}`, failed, content))
-			output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", input, false)
+			output, errTranslate := ConvertClaudeRequestToAntigravity("claude-sonnet-4-6", input, false)
+			if errTranslate != nil {
+				t.Fatal(errTranslate)
+			}
 			if !gjson.ValidBytes(output) {
 				t.Fatalf("invalid JSON: %s", output)
 			}

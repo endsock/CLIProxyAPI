@@ -2,12 +2,10 @@ package helps
 
 import (
 	"bytes"
-	"encoding/json"
-	"regexp"
+	"github.com/MoeForge/moego/json"
+	gjson "github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/regexp"
 	"strings"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type mappedClaudeCall struct {
@@ -52,13 +50,13 @@ func mapResponseParts(parts gjson.Result, state *claudeNativeToolsState) ([]byte
 		}
 		changed = true
 		for i, fcRaw := range mapped {
-			newPart := []byte(part.Raw)
-			newPart, _ = sjson.SetRawBytes(newPart, "functionCall", fcRaw)
+			partDoc := gjson.NewDocString(part.Raw)
+			_ = partDoc.SetRawBytes("functionCall", fcRaw)
 			if i > 0 {
-				newPart, _ = sjson.DeleteBytes(newPart, "thoughtSignature")
-				newPart, _ = sjson.DeleteBytes(newPart, "thought_signature")
+				_ = partDoc.Delete("thoughtSignature")
+				_ = partDoc.Delete("thought_signature")
 			}
-			out = append(out, newPart)
+			out = append(out, partDoc.Bytes())
 		}
 	}
 	if !changed {
@@ -98,10 +96,10 @@ func encodeMappedCalls(original gjson.Result, calls []mappedClaudeCall) [][]byte
 		if errMarshal != nil {
 			return nil
 		}
-		fc := []byte(original.Raw)
-		fc, _ = sjson.SetBytes(fc, "name", call.name)
-		fc, _ = sjson.SetRawBytes(fc, "args", raw)
-		out = append(out, fc)
+		callDoc := gjson.NewDocString(original.Raw)
+		_ = callDoc.Set("name", call.name)
+		_ = callDoc.SetRawBytes("args", raw)
+		out = append(out, callDoc.Bytes())
 	}
 	return out
 }

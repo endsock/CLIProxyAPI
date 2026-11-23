@@ -2,12 +2,12 @@ package helps
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 
+	"github.com/MoeForge/moego/json"
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
-	"github.com/tidwall/gjson"
 )
 
 // nativeHistoryAlias binds a client-visible call to its recorded upstream identity.

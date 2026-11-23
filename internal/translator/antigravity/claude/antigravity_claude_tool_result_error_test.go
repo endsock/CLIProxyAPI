@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // TestConvertClaudeRequestToAntigravity_ToolResultErrorRouting verifies that failed Claude tools remain failures upstream.
@@ -61,8 +61,11 @@ func TestConvertClaudeRequestToAntigravity_ToolResultErrorRouting(t *testing.T) 
 				]
 			}`, modelName, toolID, toolName, toolID, toolResponse, tt.isErrorField))
 
-			output := ConvertClaudeRequestToAntigravity(modelName, inputJSON, false)
-			functionResponse := gjson.GetBytes(output, "request.contents.1.parts.0.functionResponse")
+			output, errTranslate := ConvertClaudeRequestToAntigravity(modelName, inputJSON, false)
+			if errTranslate != nil {
+				t.Fatal(errTranslate)
+			}
+			functionResponse := ojson.GetBytesNoCopy(output, "request.contents.1.parts.0.functionResponse")
 			if !functionResponse.Exists() {
 				t.Fatalf("functionResponse is missing: %s", output)
 			}

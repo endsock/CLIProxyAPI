@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,7 +27,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -73,6 +71,20 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	os.Exit(run())
+}
+
+func logStartupErrorf(format string, args ...any) {
+	if log.StandardLogger().Out != os.Stderr {
+		_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+	log.Errorf(format, args...)
+}
+
+// run finishes deferred cleanup before main applies the process exit status.
+func run() (exitStatus int) {
+	log.SetOutput(os.Stderr)
+
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		discoverFlags := flag.NewFlagSet("discover", flag.ExitOnError)
 		timeoutSec := discoverFlags.Int("timeout", 3, "Discovery timeout in seconds")
@@ -95,7 +107,7 @@ func main() {
 			Include:     include,
 			Exclude:     exclude,
 		})
-		os.Exit(code)
+		return code
 	}
 
 	// For legacy --discover-json flag or JSON requests, keep stdout clean
@@ -111,10 +123,12 @@ func main() {
 	var claudeLogin bool
 	var noBrowser bool
 	var oauthCallbackPort int
+	var loginProxyURL string
 	var antigravityLogin bool
 	var kimiLogin bool
 	var kimiAILogin bool
 	var xaiLogin bool
+	var copilotLogin bool
 	var devinLogin bool
 	var metaLogin bool
 	var discoverGateways bool
@@ -141,10 +155,12 @@ func main() {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
+	flag.StringVar(&loginProxyURL, "login-proxy", "", "Proxy URL used for the OAuth login flow and saved as the new credential's proxy_url (http, https, socks5, socks5h)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi (.com) using OAuth")
 	flag.BoolVar(&kimiAILogin, "kimi-ai-login", false, "Login to Kimi.ai using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
+	flag.BoolVar(&copilotLogin, "copilot-login", false, "Login to Copilot using device OAuth")
 	flag.BoolVar(&devinLogin, "devin-login", false, "Login to Devin using OAuth")
 	flag.BoolVar(&metaLogin, "meta-login", false, "Login to Meta using OAuth")
 	flag.BoolVar(&discoverGateways, "discover", false, "Discover local AI gateways and CPA instances on the LAN")
@@ -213,7 +229,7 @@ func main() {
 			Include:     include,
 			Exclude:     exclude,
 		})
-		os.Exit(code)
+		return code
 	}
 
 	// Core application variables.
@@ -250,7 +266,7 @@ func main() {
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Errorf("failed to get working directory: %v", err)
-		return
+		return 1
 	}
 
 	// Load environment variables from .env if present.
@@ -348,7 +364,7 @@ func main() {
 		cancelHome()
 		if errHomeCfg != nil {
 			log.Errorf("invalid -home-jwt: %v", errHomeCfg)
-			return
+			return 1
 		}
 		if homeDisableClusterDiscovery {
 			homeCfg.DisableClusterDiscovery = true
@@ -365,13 +381,13 @@ func main() {
 		cancelHomeConfig()
 		if errGetConfig != nil {
 			log.Errorf("failed to fetch config from home: %v", errGetConfig)
-			return
+			return 1
 		}
 
 		parsed, errParseConfig := config.ParseConfigBytes(raw)
 		if errParseConfig != nil {
 			log.Errorf("failed to parse config payload from home: %v", errParseConfig)
-			return
+			return 1
 		}
 		if parsed == nil {
 			parsed = &config.Config{}
@@ -428,7 +444,7 @@ func main() {
 			}
 		}
 		if errHomePlugins != nil {
-			return
+			return 1
 		}
 		cfg = parsed
 
@@ -451,29 +467,25 @@ func main() {
 		pgStoreLocalPath = filepath.Join(pgStoreLocalPath, "pgstore")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		pgStoreInst, err = store.NewPostgresStore(ctx, store.PostgresStoreConfig{
-			DSN:      pgStoreDSN,
-			Schema:   pgStoreSchema,
-			SpoolDir: pgStoreLocalPath,
+			DSN:            pgStoreDSN,
+			Schema:         pgStoreSchema,
+			SpoolDir:       pgStoreLocalPath,
+			OptionalConfig: isCloudDeploy,
 		})
 		cancel()
 		if err != nil {
 			log.Errorf("failed to initialize postgres token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := pgStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
-			cancel()
-			log.Errorf("failed to bootstrap postgres-backed config: %v", errBootstrap)
-			return
-		}
-		cancel()
 		configFilePath = pgStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			cfg.AuthDir = pgStoreInst.AuthDir()
-			log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
+		cfg, err = pgStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap postgres-backed config: %v", err)
+			return 1
 		}
+		cfg.AuthDir = pgStoreInst.AuthDir()
+		log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
 	} else if useObjectStore {
 		if objectStoreLocalPath == "" {
 			if writableBase != "" {
@@ -489,7 +501,7 @@ func main() {
 			parsed, errParse := url.Parse(resolvedEndpoint)
 			if errParse != nil {
 				log.Errorf("failed to parse object store endpoint %q: %v", objectStoreEndpoint, errParse)
-				return
+				return 1
 			}
 			switch strings.ToLower(parsed.Scheme) {
 			case "http":
@@ -498,11 +510,11 @@ func main() {
 				useSSL = true
 			default:
 				log.Errorf("unsupported object store scheme %q (only http and https are allowed)", parsed.Scheme)
-				return
+				return 1
 			}
 			if parsed.Host == "" {
 				log.Errorf("object store endpoint %q is missing host information", objectStoreEndpoint)
-				return
+				return 1
 			}
 			resolvedEndpoint = parsed.Host
 			if parsed.Path != "" && parsed.Path != "/" {
@@ -511,36 +523,29 @@ func main() {
 		}
 		resolvedEndpoint = strings.TrimRight(resolvedEndpoint, "/")
 		objCfg := store.ObjectStoreConfig{
-			Endpoint:  resolvedEndpoint,
-			Bucket:    objectStoreBucket,
-			AccessKey: objectStoreAccess,
-			SecretKey: objectStoreSecret,
-			LocalRoot: objectStoreRoot,
-			UseSSL:    useSSL,
-			PathStyle: true,
+			Endpoint:       resolvedEndpoint,
+			Bucket:         objectStoreBucket,
+			AccessKey:      objectStoreAccess,
+			SecretKey:      objectStoreSecret,
+			LocalRoot:      objectStoreRoot,
+			UseSSL:         useSSL,
+			PathStyle:      true,
+			OptionalConfig: isCloudDeploy,
 		}
 		objectStoreInst, err = store.NewObjectTokenStore(objCfg)
 		if err != nil {
 			log.Errorf("failed to initialize object token store: %v", err)
-			return
+			return 1
 		}
 		examplePath := filepath.Join(wd, "config.example.yaml")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := objectStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
-			cancel()
-			log.Errorf("failed to bootstrap object-backed config: %v", errBootstrap)
-			return
-		}
-		cancel()
 		configFilePath = objectStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			if cfg == nil {
-				cfg = &config.Config{}
-			}
-			cfg.AuthDir = objectStoreInst.AuthDir()
-			log.Infof("object-backed token store enabled, bucket: %s", objectStoreBucket)
+		cfg, err = objectStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap object-backed config: %v", err)
+			return 1
 		}
+		cfg.AuthDir = objectStoreInst.AuthDir()
+		log.Infof("object-backed token store enabled, bucket: %s", objectStoreBucket)
 	} else if useGitStore {
 		if gitStoreLocalPath == "" {
 			if writableBase != "" {
@@ -553,38 +558,16 @@ func main() {
 		authDir := filepath.Join(gitStoreRoot, "auths")
 		gitStoreInst = store.NewGitTokenStore(gitStoreRemoteURL, gitStoreUser, gitStorePassword, gitStoreBranch)
 		gitStoreInst.SetBaseDir(authDir)
-		if errRepo := gitStoreInst.EnsureRepository(); errRepo != nil {
-			log.Errorf("failed to prepare git token store: %v", errRepo)
-			return
+		gitStoreInst.SetOptionalConfig(isCloudDeploy)
+		examplePath := filepath.Join(wd, "config.example.yaml")
+		cfg, err = gitStoreInst.BootstrapConfig(context.Background(), examplePath)
+		if err != nil {
+			log.Errorf("failed to bootstrap git-backed config: %v", err)
+			return 1
 		}
 		configFilePath = gitStoreInst.ConfigPath()
-		if configFilePath == "" {
-			configFilePath = filepath.Join(gitStoreRoot, "config", "config.yaml")
-		}
-		if _, statErr := os.Stat(configFilePath); errors.Is(statErr, fs.ErrNotExist) {
-			examplePath := filepath.Join(wd, "config.example.yaml")
-			if _, errExample := os.Stat(examplePath); errExample != nil {
-				log.Errorf("failed to find template config file: %v", errExample)
-				return
-			}
-			if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
-				log.Errorf("failed to bootstrap git-backed config: %v", errCopy)
-				return
-			}
-			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
-				log.Errorf("failed to commit initial git-backed config: %v", errCommit)
-				return
-			}
-			log.Infof("git-backed config initialized from template: %s", configFilePath)
-		} else if statErr != nil {
-			log.Errorf("failed to inspect git-backed config: %v", statErr)
-			return
-		}
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			cfg.AuthDir = gitStoreInst.AuthDir()
-			log.Infof("git-backed token store enabled, repository path: %s", gitStoreRoot)
-		}
+		cfg.AuthDir = gitStoreInst.AuthDir()
+		log.Infof("git-backed token store enabled, repository path: %s", gitStoreRoot)
 	} else if configPath != "" {
 		configFilePath = configPath
 		cfg, err = config.LoadConfigOptional(configPath, isCloudDeploy)
@@ -592,41 +575,26 @@ func main() {
 		wd, err = os.Getwd()
 		if err != nil {
 			log.Errorf("failed to get working directory: %v", err)
-			return
+			return 1
 		}
 		configFilePath = filepath.Join(wd, "config.yaml")
 		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
 	}
 	if err != nil {
 		log.Errorf("failed to load config: %v", err)
-		return
+		return 1
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
 
-	// In cloud deploy mode, check if we have a valid configuration
 	var configFileExists bool
 	if isCloudDeploy {
-		if configLoadedFromHome && cfg != nil {
-			configFileExists = cfg.Port != 0
+		configFileExists = cfg.Port != 0 && (configLoadedFromHome || cfg.SourceHash != "")
+		if configFileExists {
+			log.Info("Cloud deploy mode: Configuration detected; starting service")
 		} else {
-			if info, errStat := os.Stat(configFilePath); errStat != nil {
-				// Don't mislead: API server will not start until configuration is provided.
-				log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
-				configFileExists = false
-			} else if info.IsDir() {
-				log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
-				configFileExists = false
-			} else if cfg.Port == 0 {
-				// LoadConfigOptional returns empty config when file is empty or invalid.
-				// Config file exists but is empty or invalid; treat as missing config
-				log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
-				configFileExists = false
-			} else {
-				log.Info("Cloud deploy mode: Configuration file detected; starting service")
-				configFileExists = true
-			}
+			log.Info("Cloud deploy mode: Standing by for valid configuration")
 		}
 	}
 	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
@@ -636,7 +604,7 @@ func main() {
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
-		return
+		return 1
 	}
 
 	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
@@ -645,8 +613,8 @@ func main() {
 	util.SetLogLevel(cfg)
 
 	if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
-		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return
+		logStartupErrorf("failed to resolve auth directory: %v", errResolveAuthDir)
+		return 1
 	} else {
 		cfg.AuthDir = resolvedAuthDir
 	}
@@ -658,9 +626,10 @@ func main() {
 	options := &cmd.LoginOptions{
 		NoBrowser:    noBrowser,
 		CallbackPort: oauthCallbackPort,
+		ProxyURL:     loginProxyURL,
 	}
 
-	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || devinLogin || metaLogin
+	commandMode := vertexImport != "" || siwcBind != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || kimiAILogin || xaiLogin || copilotLogin || devinLogin || metaLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -689,13 +658,13 @@ func main() {
 		errHomePluginLoad := homeplugins.MarkLoadResults(&homePluginSyncReport, pluginHost)
 		errReportPlugins := home.ReportPluginStatus(context.Background(), homeClient, cfg.Home.NodeID, homePluginSyncReport)
 		if errHomePluginLoad != nil {
-			log.Errorf("failed to load home plugins: %v", errHomePluginLoad)
+			logStartupErrorf("failed to load home plugins: %v", errHomePluginLoad)
 		}
 		if errReportPlugins != nil {
 			log.Warnf("failed to report home plugin load status: %v", errReportPlugins)
 		}
 		if errHomePluginLoad != nil {
-			return
+			return 1
 		}
 	}
 	if homeClient != nil {
@@ -706,10 +675,7 @@ func main() {
 	}
 	if pluginHost.HasTriggeredCommandLineFlags() {
 		if exitCode, handled := pluginHost.ExecuteCommandLine(context.Background(), os.Args[0], os.Args[1:], configFilePath, flag.CommandLine); handled {
-			if exitCode != 0 {
-				os.Exit(exitCode)
-			}
-			return
+			return exitCode
 		}
 	}
 
@@ -739,6 +705,8 @@ func main() {
 		cmd.DoKimiAILogin(cfg, options)
 	} else if xaiLogin {
 		cmd.DoXAILogin(cfg, options)
+	} else if copilotLogin {
+		cmd.DoCopilotLogin(cfg, options)
 	} else if devinLogin {
 		cmd.DoDevinLogin(cfg, options)
 	} else if metaLogin {
@@ -748,7 +716,7 @@ func main() {
 		if isCloudDeploy && !configFileExists {
 			// No config file available, just wait for shutdown
 			cmd.WaitForCloudDeploy()
-			return
+			return 0
 		}
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded catalogs unless an explicit catalog source is configured")
@@ -757,7 +725,6 @@ func main() {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
-				misc.StartAntigravityVersionUpdater(context.Background())
 				registry.SetLocalModelCatalogs(localModel)
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
@@ -794,11 +761,23 @@ func main() {
 				ready := false
 				backoff := 100 * time.Millisecond
 				for i := 0; i < 30; i++ {
+					select {
+					case <-done:
+						i = 30
+					default:
+					}
+					if i >= 30 {
+						break
+					}
 					if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
 						ready = true
 						break
 					}
-					time.Sleep(backoff)
+					select {
+					case <-done:
+						i = 30
+					case <-time.After(backoff):
+					}
 					if backoff < time.Second {
 						backoff = time.Duration(float64(backoff) * 1.5)
 					}
@@ -809,34 +788,45 @@ func main() {
 					cancel()
 					<-done
 					fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-					return
+					return 1
 				}
 
+				var errTUI error
 				if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
 					restoreIO()
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					errTUI = errRun
 				} else {
 					restoreIO()
 				}
 
 				cancel()
 				<-done
+				if errTUI != nil {
+					return 1
+				}
 			} else {
 				// Default TUI mode: pure management client.
 				// The proxy server must already be running (locally or remotely).
 				baseURL := resolveManagementBaseURL(managementBaseURL, cfg)
 				if errRun := tui.RunWithBaseURL(baseURL, password, nil, os.Stdout); errRun != nil {
 					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+					return 1
 				}
 			}
 		} else {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
-			misc.StartAntigravityVersionUpdater(context.Background())
 			registry.SetLocalModelCatalogs(localModel)
-			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
+			if errStart := cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...); errStart != nil {
+				if log.StandardLogger().Out != os.Stderr {
+					_, _ = fmt.Fprintf(os.Stderr, "proxy service error: %v\n", errStart)
+				}
+				return 1
+			}
 		}
 	}
+	return 0
 }
 
 // resolveManagementBaseURL determines the management API base URL for TUI client mode.
@@ -891,7 +881,7 @@ func defaultPluginBootstrapConfigPath(defaultPath string) string {
 }
 
 func loadPluginBootstrapConfig(path string) *config.Config {
-	raw, errReadFile := os.ReadFile(path)
+	raw, errReadFile := config.ReadConfigFile(path)
 	if errReadFile != nil {
 		if !errors.Is(errReadFile, os.ErrNotExist) {
 			log.Warnf("failed to read plugin bootstrap config: %v", errReadFile)
@@ -952,7 +942,7 @@ func argvEnablesBoolFlag(args []string, name string) bool {
 func argvFlagConsumesValue(name string) bool {
 	switch name {
 	case "codex-login", "codex-device-login", "claude-login", "no-browser",
-		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "devin-login", "meta-login",
+		"antigravity-login", "kimi-login", "kimi-ai-login", "xai-login", "copilot-login", "devin-login", "meta-login",
 		"discover", "discover-json", "home-disable-cluster-discovery",
 		"tui", "standalone", "local-model":
 		return false
