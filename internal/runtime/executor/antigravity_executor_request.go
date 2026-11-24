@@ -18,8 +18,30 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
+
+type antigravityRequestSessionIDKey struct{}
+
+func antigravityRequestSessionID(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) string {
+	if opts.SourceFormat == sdktranslator.FormatClaude {
+		payload := req.Payload
+		if len(opts.OriginalRequest) > 0 {
+			payload = opts.OriginalRequest
+		}
+		if sessionID := cliproxysession.ClaudeMetadataSessionID(payload); sessionID != "" {
+			return sessionID
+		}
+	}
+	return opts.Headers.Get("Session-Id")
+}
+
+func withAntigravityRequestSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, antigravityRequestSessionIDKey{}, strings.TrimSpace(sessionID))
+}
 
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, derivedSessionIDs ...string) (*http.Request, error) {
 	doc := ojson.NewDoc(payload)
@@ -94,6 +116,21 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 
 	applyAntigravityNativeSignatureReplayIfNeededDoc(modelName, doc)
 	helps.FinalizePayloadDoc(ctx, doc)
+	if sessionID, _ := ctx.Value(antigravityRequestSessionIDKey{}).(string); sessionID != "" && !strings.Contains(lowerModel, "image") && doc.Get("requestType").String() != "web_search" {
+		trajectoryID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(sessionID)).String()
+		contentCount := doc.Get("request.contents.#").Int()
+		requestID := fmt.Sprintf("agent/%s/%d/%s/%d", sessionID, time.Now().UnixMilli(), trajectoryID, contentCount)
+		_ = doc.Set("requestId", requestID)
+		_ = doc.Set("request.labels.cascade_id", sessionID)
+		_ = doc.Set("request.labels.root_cascade_id", sessionID)
+		_ = doc.Set("request.labels.trajectory_id", trajectoryID)
+		_ = doc.Set("request.labels.request_id", fmt.Sprintf("%s-%d", trajectoryID, contentCount))
+		_ = doc.Set("request.labels.model_enum", "MODEL_PLACEHOLDER_M526")
+		_ = doc.Set("request.labels.used_claude", "false")
+		_ = doc.Set("request.labels.used_claude_conservative", "false")
+		_ = doc.Set("request.labels.used_non_gemini_model", "false")
+		_ = doc.SetRaw("request.generationConfig", `{"maxOutputTokens":262144,"thinkingConfig":{"includeThoughts":true,"thinkingLevel":"MEDIUM"}}`)
+	}
 	finalPayload := doc.Bytes()
 	var (
 		bodyReader io.Reader = bytes.NewReader(finalPayload)

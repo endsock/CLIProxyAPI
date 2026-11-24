@@ -48,7 +48,7 @@ func TestAntigravityNativeToolsRespectPayloadBarrier(t *testing.T) {
 			if errRead != nil {
 				t.Fatal(errRead)
 			}
-			if request.Header.Get("User-Agent") != "antigravity/cli/1.1.22 (aidev_client; os_type=windows; arch=amd64; cl=971564011; auth_method=consumer)" {
+			if request.Header.Get("User-Agent") != "antigravity/cli/1.5.15 (aidev_client; os_type=windows; arch=amd64; cl=1027820220; auth_method=consumer)" {
 				t.Fatal("native-tool compatibility was not activated")
 			}
 			if ojson.GetBytesNoCopy(wire, "request.tools").Exists() {

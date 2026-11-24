@@ -10,7 +10,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-const antigravityClaudeNativeUserAgent = "antigravity/cli/1.1.22 (aidev_client; os_type=windows; arch=amd64; cl=971564011; auth_method=consumer)"
+const antigravityClaudeNativeUserAgent = "antigravity/cli/1.5.15 (aidev_client; os_type=windows; arch=amd64; cl=1027820220; auth_method=consumer)"
 
 type claudeNativeToolsKey struct{}
 
