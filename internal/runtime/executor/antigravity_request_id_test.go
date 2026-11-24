@@ -173,13 +173,27 @@ func TestAntigravityRequestIDClaudeMetadata(t *testing.T) {
 				t.Fatal("upstream request not received")
 			}
 			requestID := ojson.GetBytes(body, "requestId").String()
+			parts := strings.Split(requestID, "/")
 			if tc.want == "" {
-				if !strings.HasPrefix(requestID, "agent-") {
-					t.Fatalf("requestId = %q, want legacy format", requestID)
+				count := ojson.GetBytes(body, "request.contents.#").Int()
+				if len(parts) != 5 || parts[0] != "agent" {
+					t.Fatalf("requestId = %q, want agent/<uuid>/<ts>/<uuid>/<count>", requestID)
+				}
+				if _, err := uuid.Parse(parts[1]); err != nil {
+					t.Fatalf("invalid random session UUID %q: %v", parts[1], err)
+				}
+				if _, err := uuid.Parse(parts[3]); err != nil {
+					t.Fatalf("invalid random trajectory UUID %q: %v", parts[3], err)
+				}
+				if parts[1] == parts[3] {
+					t.Fatalf("expected distinct random UUIDs, got %q", requestID)
+				}
+				labels := ojson.GetBytes(body, "request.labels")
+				if labels.Get("cascade_id").String() != parts[1] || labels.Get("root_cascade_id").String() != parts[1] || labels.Get("trajectory_id").String() != parts[3] || labels.Get("request_id").String() != parts[3]+"-"+strconv.FormatInt(count, 10) {
+					t.Fatalf("unexpected labels for random session: %s", labels.Raw)
 				}
 				return
 			}
-			parts := strings.Split(requestID, "/")
 			if len(parts) != 5 || parts[0] != "agent" || parts[1] != tc.want || parts[3] != uuid.NewSHA1(uuid.NameSpaceOID, []byte(tc.want)).String() {
 				t.Fatalf("requestId = %q, want session %q and its derived UUID", requestID, tc.want)
 			}
@@ -197,7 +211,6 @@ func TestAntigravityRequestIDExceptions(t *testing.T) {
 		sessionID string
 		prefix    string
 	}{
-		{name: "missing session", model: "gemini-3-flash", payload: `{"request":{"contents":[]}}`, prefix: "agent-"},
 		{name: "image", model: "gemini-3.1-flash-image", payload: `{"request":{"contents":[]}}`, sessionID: "test-session", prefix: "image_gen/"},
 		{name: "web search", model: "gemini-3-flash", payload: `{"requestType":"web_search","request":{"contents":[]}}`, sessionID: "test-session"},
 	} {

@@ -42,12 +42,12 @@ func TestAntigravityPiToolsMapping(t *testing.T) {
 }
 
 func TestAntigravityPiToolsSelectionAndSingleDirection(t *testing.T) {
-	for _, agent := range []string{"", "claude", "pi", "PI (test)", "pi (test)", "prefix pi (test)"} {
+	for _, agent := range []string{"", "claude", "Claude Code", "pi", "PI (test)", "pi (test)", "prefix pi (test)"} {
 		ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, agent)
 		body := []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"view_file","args":{"AbsolutePath":"/tmp/a"}}}]}}]}`)
-		want := "Read"
-		if agent == "pi (test)" || agent == "prefix pi (test)" {
-			want = "read"
+		want := "read"
+		if agent == "claude" || agent == "Claude Code" {
+			want = "Read"
 		}
 		if got := gjson.GetBytes(MapResponseFunctionCalls(ctx, body), "candidates.0.content.parts.0.functionCall.name").String(); got != want {
 			t.Fatalf("agent %q: name = %q, want %q", agent, got, want)

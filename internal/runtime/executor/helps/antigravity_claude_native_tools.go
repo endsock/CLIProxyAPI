@@ -30,7 +30,7 @@ func AnnotateClaudeNativeTools(ctx context.Context, from sdktranslator.Format, c
 	if cfg != nil {
 		extra = strings.TrimSpace(cfg.Codex.ExtraSystemPrompt)
 	}
-	piTools := len(originAgents) > 0 && strings.Contains(originAgents[0], "pi (")
+	piTools := len(originAgents) == 0 || !strings.Contains(strings.ToLower(originAgents[0]), "claude")
 	return context.WithValue(ctx, claudeNativeToolsKey{}, &claudeNativeToolsState{extraSystemPrompt: extra, piTools: piTools})
 }
 

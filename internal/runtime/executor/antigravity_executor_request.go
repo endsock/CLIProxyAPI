@@ -116,13 +116,21 @@ func (e *AntigravityExecutor) buildRequestDoc(ctx context.Context, auth *cliprox
 
 	applyAntigravityNativeSignatureReplayIfNeededDoc(modelName, doc)
 	helps.FinalizePayloadDoc(ctx, doc)
-	if sessionID, _ := ctx.Value(antigravityRequestSessionIDKey{}).(string); sessionID != "" && !strings.Contains(lowerModel, "image") && doc.Get("requestType").String() != "web_search" {
-		trajectoryID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(sessionID)).String()
+	if !strings.Contains(lowerModel, "image") && doc.Get("requestType").String() != "web_search" {
+		sessionID, _ := ctx.Value(antigravityRequestSessionIDKey{}).(string)
+		cascadeID := sessionID
+		var trajectoryID string
+		if cascadeID != "" {
+			trajectoryID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(cascadeID)).String()
+		} else {
+			cascadeID = uuid.NewString()
+			trajectoryID = uuid.NewString()
+		}
 		contentCount := doc.Get("request.contents.#").Int()
-		requestID := fmt.Sprintf("agent/%s/%d/%s/%d", sessionID, time.Now().UnixMilli(), trajectoryID, contentCount)
+		requestID := fmt.Sprintf("agent/%s/%d/%s/%d", cascadeID, time.Now().UnixMilli(), trajectoryID, contentCount)
 		_ = doc.Set("requestId", requestID)
-		_ = doc.Set("request.labels.cascade_id", sessionID)
-		_ = doc.Set("request.labels.root_cascade_id", sessionID)
+		_ = doc.Set("request.labels.cascade_id", cascadeID)
+		_ = doc.Set("request.labels.root_cascade_id", cascadeID)
 		_ = doc.Set("request.labels.trajectory_id", trajectoryID)
 		_ = doc.Set("request.labels.request_id", fmt.Sprintf("%s-%d", trajectoryID, contentCount))
 		_ = doc.Set("request.labels.model_enum", "MODEL_PLACEHOLDER_M526")

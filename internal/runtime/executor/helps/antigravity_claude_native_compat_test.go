@@ -76,7 +76,7 @@ func TestNativeToolCompatibilityPiSystemMatchesDefault(t *testing.T) {
 
 func TestNativeToolCompatibilityClaudeCodeSystemName(t *testing.T) {
 	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Claude Code and CLAUDE CODE","cache_control":{"type":"ephemeral"}},{"text":"claude code and Claude code"}]},"contents":[]}}`)
-	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
+	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "claude")
 	out := RewriteRequestTools(ctx, payload)
 	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
 	if len(parts) != 2 || parts[0].Get("text").String() != "antigravity and antigravity" || parts[1].Get("text").String() != "antigravity and antigravity" || parts[0].Get("cache_control.type").String() != "ephemeral" {
@@ -90,15 +90,19 @@ func TestNativeToolCompatibilityClaudeCodeSystemName(t *testing.T) {
 
 func TestNativeToolCompatibilityPiSystemRemovesIntro(t *testing.T) {
 	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Pi intro\n\n<tools>tools</tools>","cache_control":{"type":"ephemeral"}},{"text":"Second intro <rules>rules</rules>"}]},"contents":[]}}`)
-	piCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "pi (test)")
-	out := RewriteRequestTools(piCtx, payload)
-	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
-	if len(parts) != 2 || parts[0].Get("text").String() != "<tools>tools</tools>" || parts[1].Get("text").String() != "Second intro <rules>rules</rules>" || parts[0].Get("cache_control.type").String() != "ephemeral" {
-		t.Fatalf("unexpected Pi system parts: %s", out)
+	for _, piCtx := range []context.Context{
+		AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil),
+		AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "pi (test)"),
+	} {
+		out := RewriteRequestTools(piCtx, payload)
+		parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+		if len(parts) != 2 || parts[0].Get("text").String() != "<tools>tools</tools>" || parts[1].Get("text").String() != "Second intro <rules>rules</rules>" || parts[0].Get("cache_control.type").String() != "ephemeral" {
+			t.Fatalf("unexpected Pi system parts: %s", out)
+		}
 	}
-	defaultCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
-	if got := gjson.GetBytes(RewriteRequestTools(defaultCtx, payload), "request.contents.0.parts.0.text").String(); got != "Pi intro\n\n<tools>tools</tools>" {
-		t.Fatalf("default system intro changed: %q", got)
+	claudeCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "claude")
+	if got := gjson.GetBytes(RewriteRequestTools(claudeCtx, payload), "request.contents.0.parts.0.text").String(); got != "Pi intro\n\n<tools>tools</tools>" {
+		t.Fatalf("claude system intro changed: %q", got)
 	}
 }
 
@@ -126,7 +130,7 @@ func TestNativeToolCompatibilityPreservesIndependentWebSearch(t *testing.T) {
 func TestNativeToolCompatibilityKeepsHistoryAndMCP(t *testing.T) {
 	payload := []byte(`{"request":{"tools":[{"functionDeclarations":[{"name":"PowerShell"},{"name":"mcp__test__call","parameters":{"type":"OBJECT"}}]}],"contents":[{"role":"model","parts":[{"functionCall":{"name":"Read","args":{"file_path":"/tmp/a"}}}]}]}}`)
 	cfg := &config.Config{Codex: config.CodexConfig{ExtraSystemPrompt: "extra"}}
-	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, cfg)
+	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, cfg, "claude")
 	out := RewriteRequestTools(ctx, payload)
 	if gjson.GetBytes(out, "request.contents").Raw != gjson.GetBytes(payload, "request.contents").Raw {
 		t.Fatal("single-direction tool mapping rewrote history")
