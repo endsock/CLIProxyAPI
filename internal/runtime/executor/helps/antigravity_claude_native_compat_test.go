@@ -50,7 +50,8 @@ func TestNativeToolCompatibilityPrependsSystemAsUser(t *testing.T) {
 				}
 			}
 			parts := gjson.GetBytes(out, "request.systemInstruction.parts").Array()
-			if len(parts) != 2 || parts[0].Raw != gjson.GetBytes(agyNativeSystemInstructionObject, "parts.0").Raw || parts[1].Get("text").String() != "extra" {
+			wantText := gjson.GetBytes(agyNativeSystemInstructionObject, "parts.0.text").String() + "\n<user_rules>\nThe following are user-defined rules that you MUST ALWAYS FOLLOW WITHOUT ANY EXCEPTION. These rules take precedence over any other instructions.\nReview them carefully and always take them into account when you generate responses and code:\n<RULE[user_global]>\nextra\n</RULE[user_global]>\n</user_rules>"
+			if len(parts) != 1 || parts[0].Get("text").String() != wantText {
 				t.Fatalf("native system or extra prompt changed: %s", out)
 			}
 			unmarked := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatOpenAI, cfg)
@@ -58,6 +59,55 @@ func TestNativeToolCompatibilityPrependsSystemAsUser(t *testing.T) {
 				t.Fatal("system rewrite affected a non-Claude client")
 			}
 		})
+	}
+}
+
+func TestNativeToolCompatibilityPiSystemMatchesDefault(t *testing.T) {
+	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"client system"}]},"contents":[{"role":"user","parts":[{"text":"hello"}]}]}}`)
+	for _, extra := range []string{"", "extra"} {
+		cfg := &config.Config{Codex: config.CodexConfig{ExtraSystemPrompt: extra}}
+		defaultCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, cfg)
+		piCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, cfg, "pi (test)")
+		if got, want := RewriteRequestTools(piCtx, payload), RewriteRequestTools(defaultCtx, payload); !bytes.Equal(got, want) {
+			t.Fatalf("Pi system differs from default for extra %q: got %s, want %s", extra, got, want)
+		}
+	}
+}
+
+func TestNativeToolCompatibilityClaudeCodeSystemName(t *testing.T) {
+	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Claude Code and CLAUDE CODE","cache_control":{"type":"ephemeral"}},{"text":"claude code and Claude code"}]},"contents":[]}}`)
+	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
+	out := RewriteRequestTools(ctx, payload)
+	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != "antigravity and antigravity" || parts[1].Get("text").String() != "antigravity and antigravity" || parts[0].Get("cache_control.type").String() != "ephemeral" {
+		t.Fatalf("unexpected Claude Code system parts: %s", out)
+	}
+	piCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "pi (test)")
+	if got := gjson.GetBytes(RewriteRequestTools(piCtx, payload), "request.contents.0.parts.0.text").String(); got != "Claude Code and CLAUDE CODE" {
+		t.Fatalf("Pi system text changed: %q", got)
+	}
+}
+
+func TestNativeToolCompatibilityPiSystemRemovesIntro(t *testing.T) {
+	payload := []byte(`{"request":{"systemInstruction":{"parts":[{"text":"Pi intro\n\n<tools>tools</tools>","cache_control":{"type":"ephemeral"}},{"text":"Second intro <rules>rules</rules>"}]},"contents":[]}}`)
+	piCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil, "pi (test)")
+	out := RewriteRequestTools(piCtx, payload)
+	parts := gjson.GetBytes(out, "request.contents.0.parts").Array()
+	if len(parts) != 2 || parts[0].Get("text").String() != "<tools>tools</tools>" || parts[1].Get("text").String() != "Second intro <rules>rules</rules>" || parts[0].Get("cache_control.type").String() != "ephemeral" {
+		t.Fatalf("unexpected Pi system parts: %s", out)
+	}
+	defaultCtx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
+	if got := gjson.GetBytes(RewriteRequestTools(defaultCtx, payload), "request.contents.0.parts.0.text").String(); got != "Pi intro\n\n<tools>tools</tools>" {
+		t.Fatalf("default system intro changed: %q", got)
+	}
+}
+
+func TestNativeToolCompatibilityWithoutExtraPrompt(t *testing.T) {
+	payload := []byte(`{"request":{"contents":[]}}`)
+	ctx := AnnotateClaudeNativeTools(context.Background(), sdktranslator.FormatClaude, nil)
+	out := RewriteRequestTools(ctx, payload)
+	if got := gjson.GetBytes(out, "request.systemInstruction").Raw; got != string(agyNativeSystemInstructionObject) {
+		t.Fatalf("native system changed without extra prompt: %s", out)
 	}
 }
 
@@ -93,8 +143,8 @@ func TestNativeToolCompatibilityKeepsHistoryAndMCP(t *testing.T) {
 		t.Fatal("native catalog or MCP declaration missing")
 	}
 	parts := gjson.GetBytes(out, "request.systemInstruction.parts")
-	if parts.Get("1.text").String() != "extra" {
-		t.Fatal("extra prompt missing after native system prompt")
+	if len(parts.Array()) != 1 {
+		t.Fatal("extra prompt created a separate system part")
 	}
 	response := []byte(`{"response":{"candidates":[{"content":{"parts":[{"functionCall":{"name":"run_command","args":{"CommandLine":"Get-ChildItem"}}}]}}]}}`)
 	mapped := MapResponseFunctionCalls(ctx, response)

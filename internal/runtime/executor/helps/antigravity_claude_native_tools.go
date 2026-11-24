@@ -45,7 +45,7 @@ func claudeNativeToolsFromCtx(ctx context.Context) *claudeNativeToolsState {
 // RewriteRequestTools replaces request.tools with the Antigravity native catalog
 // plus translator-produced mcp__* declarations, overwrites
 // request.systemInstruction with the captured Antigravity prompt, then appends
-// codex.extra-system-prompt as an extra parts item when set. The incoming system
+// codex.extra-system-prompt to the native text when set. The incoming system
 // text is prepended as a user message without changing existing history.
 func RewriteRequestTools(ctx context.Context, payload []byte) []byte {
 	if claudeNativeToolsFromCtx(ctx) == nil || len(payload) == 0 {
@@ -80,29 +80,11 @@ func RewriteRequestToolsDoc(ctx context.Context, doc *ojson.Doc) bool {
 		}
 		replaced = JoinRawJSONArray(items)
 	}
-	systemParts := make([][]byte, 0)
-	doc.Get("request.systemInstruction.parts").ForEach(func(_, part ojson.Result) bool {
-		if text := part.Get("text"); text.Type == ojson.String && text.String() != "" {
-			systemParts = append(systemParts, []byte(part.Raw))
-		}
-		return true
-	})
-	if len(systemParts) > 0 {
-		messageDoc := ojson.NewDocString(`{"role":"user"}`)
-		_ = messageDoc.SetRawBytes("parts", JoinRawJSONArray(systemParts))
-		contents := [][]byte{messageDoc.Bytes()}
-		doc.Get("request.contents").ForEach(func(_, content ojson.Result) bool {
-			contents = append(contents, []byte(content.Raw))
-			return true
-		})
-		_ = doc.SetRawBytes("request.contents", JoinRawJSONArray(contents))
-	}
 	_ = doc.SetRawBytes("request.tools", replaced)
-	_ = doc.SetRawBytes("request.systemInstruction", agyNativeSystemInstructionObject)
-	if state.extraSystemPrompt != "" {
-		partDoc := ojson.NewDocString(`{}`)
-		_ = partDoc.Set("text", state.extraSystemPrompt)
-		_ = doc.SetRawBytes("request.systemInstruction.parts.-1", partDoc.Bytes())
+	if state.piTools {
+		rewritePiSystem(doc, state)
+	} else {
+		rewriteClaudeCodeSystem(doc, state)
 	}
 	return true
 }
