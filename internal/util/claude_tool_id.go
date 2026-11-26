@@ -12,7 +12,7 @@ import (
 	"github.com/MoeForge/moego/regexp"
 )
 
-const geminiClaudeToolUseIDPrefix = "cpa_gemini_"
+const geminiClaudeToolUseIDPrefix = "toolu_"
 
 var (
 	claudeToolUseIDSanitizer    = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
